@@ -1,0 +1,9 @@
+services:
+  bot:
+    build: .
+    container_name: funding-bot
+    env_file:
+      - .env
+    ports:
+      - "8095:8095"
+    restart: unless-stopped
