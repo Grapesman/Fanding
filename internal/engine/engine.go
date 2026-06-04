@@ -69,7 +69,7 @@ func (e *Engine) scanOnce(ctx context.Context) error {
 	e.store.AddLog("scanOnce started")
 	for _, ex := range e.exchanges {
 		e.store.AddLog(fmt.Sprintf("%s FundingCandidates start", ex.Name()))
-		candidates, err := e.fetchCandidatesWithTimeout(ex, 10*time.Second)
+		candidates, err := e.fetchCandidatesWithTimeout(ex, 25*time.Second)
 		if err != nil {
 			e.store.AddLog(fmt.Sprintf("%s FundingCandidates ok: %d rows", ex.Name(), len(candidates)))
 			e.store.SetExchangeStatus(ex.Name(), false, err.Error())
