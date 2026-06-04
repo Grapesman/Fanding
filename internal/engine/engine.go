@@ -66,10 +66,12 @@ func (e *Engine) scanOnce(ctx context.Context) error {
 	e.refreshBalances()
 	all := []domain.Candidate{}
 	selectedByExchange := map[domain.ExchangeName]domain.Candidate{}
-
+	e.store.AddLog("scanOnce started")
 	for _, ex := range e.exchanges {
-		candidates, err := ex.FundingCandidates()
+		e.store.AddLog(fmt.Sprintf("%s FundingCandidates start", ex.Name()))
+		candidates, err := e.fetchCandidatesWithTimeout(ex, 10*time.Second)
 		if err != nil {
+			e.store.AddLog(fmt.Sprintf("%s FundingCandidates ok: %d rows", ex.Name(), len(candidates)))
 			e.store.SetExchangeStatus(ex.Name(), false, err.Error())
 			e.store.AddLog(fmt.Sprintf("%s candidates error: %v", ex.Name(), err))
 			continue
@@ -88,6 +90,7 @@ func (e *Engine) scanOnce(ctx context.Context) error {
 			all[i].Selected = true
 		}
 	}
+	e.store.AddLog(fmt.Sprintf("scanOnce collected total: %d candidates", len(all)))
 	e.store.SetCandidates(all)
 
 	e.handleWarningsAndPlans(selectedByExchange)
@@ -166,5 +169,29 @@ func (e *Engine) handleWarningsAndPlans(selected map[domain.ExchangeName]domain.
 		if until <= e.cfg.EntryBeforeFunding && until > 0 {
 			e.store.AddLog(fmt.Sprintf("entry window reached for %s %s mode=%s", c.Exchange, c.Symbol, e.cfg.BotMode))
 		}
+	}
+}
+
+type candidateResult struct {
+	candidates []domain.Candidate
+	err        error
+}
+
+func (e *Engine) fetchCandidatesWithTimeout(ex domain.Exchange, timeout time.Duration) ([]domain.Candidate, error) {
+	ch := make(chan candidateResult, 1)
+
+	go func() {
+		candidates, err := ex.FundingCandidates()
+		ch <- candidateResult{
+			candidates: candidates,
+			err:        err,
+		}
+	}()
+
+	select {
+	case res := <-ch:
+		return res.candidates, res.err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("%s funding candidates timeout after %s", ex.Name(), timeout)
 	}
 }

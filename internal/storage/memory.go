@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -68,7 +69,7 @@ func (s *Store) applyOverridesLocked(c []domain.Candidate) {
 
 func (s *Store) SetCandidates(c []domain.Candidate) {
 	copyC := append([]domain.Candidate(nil), c...)
-
+	s.AddLog(fmt.Sprintf("SetCandidates called: %d candidates", len(copyC)))
 	s.mu.Lock()
 	s.applyOverridesLocked(copyC)
 
