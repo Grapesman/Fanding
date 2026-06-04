@@ -1,9 +1,33 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fanding-postgres
+    environment:
+      POSTGRES_DB: funding_bot
+      POSTGRES_USER: funding_bot
+      POSTGRES_PASSWORD: funding_bot
+    ports:
+      - "5433:5432"
+    volumes:
+      - fanding_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U funding_bot -d funding_bot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   bot:
     build: .
     container_name: funding-bot
     env_file:
       - .env
     ports:
-      - "8095:8095"
+      - "${DASHBOARD_PORT:-8095}:8095"
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  fanding_pgdata:

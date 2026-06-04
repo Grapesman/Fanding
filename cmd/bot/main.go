@@ -36,22 +36,30 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	mem := storage.NewStore()
-	if pg, err := storage.OpenPostgres(cfg.PostgresDSN()); err == nil {
-		defer pg.Close()
-		if err := pg.Migrate(); err != nil {
-			log.Printf("postgres migrate: %v", err)
-		}
-		mem.AddLog("postgres connected")
-	} else {
-		mem.AddLog("postgres unavailable, using memory store only: " + err.Error())
+	store := storage.NewStore()
+
+	pg, err := openPostgresWithRetry(cfg.PostgresDSN(), 30, 2*time.Second)
+	if err != nil {
+		store.AddLog("postgres unavailable, using memory fallback: " + err.Error())
 		log.Printf("postgres unavailable: %v", err)
+	} else {
+		defer pg.Close()
+
+		if err := pg.Migrate(); err != nil {
+			store.AddLog("postgres migrate error: " + err.Error())
+			log.Printf("postgres migrate: %v", err)
+		} else {
+			store.SetPostgres(pg)
+			store.AddLog("postgres connected and migrations applied")
+			log.Printf("postgres connected")
+		}
 	}
 
 	exchanges := buildExchanges(cfg)
 
 	tg := telegram.New(cfg.TelegramBotToken, cfg.TelegramChatID, cfg.DashboardPublicURL)
-	dash := dashboard.New(cfg, mem)
+	dash := dashboard.New(cfg, store)
+
 	go func() {
 		log.Printf("dashboard listening on http://%s", dash.Addr())
 		if err := dash.Run(); err != nil {
@@ -63,21 +71,28 @@ func main() {
 	defer stop()
 
 	go tg.Poll(ctx, telegram.Handlers{
-		StartText:     func() string { return startupText(cfg, mem) },
-		ActiveText:    func() string { return activeText(mem) },
+		StartText: func() string {
+			return startupText(cfg, store)
+		},
+		ActiveText: func() string {
+			return activeText(store)
+		},
 		CountdownText: countdownText,
 		CloseAllText: func(confirm bool) string {
-			return "Режим " + string(cfg.BotMode) + ": endpoint закрытия всех позиций подготовлен. Реальная реализация подключается по биржам поэтапно."
+			return "Режим " + string(cfg.BotMode) + ": endpoint закрытия всех позиций подготовлен.\n" +
+				"Реальная реализация подключается по биржам поэтапно."
 		},
 		SkipText: func(exchange, symbol string, fundingUnix int64) string {
-			mem.MarkSkipped(domain.ExchangeName(exchange), symbol, fundingUnix)
-			mem.AddLog("telegram skip signal: " + exchange + " " + symbol)
+			store.MarkSkipped(domain.ExchangeName(exchange), symbol, fundingUnix)
+			store.AddLog("telegram skip signal: " + exchange + " " + symbol)
 			return "Сделка по " + symbol + " на " + exchange + " Futures пропущена вручную."
 		},
 	})
 
-	eng := engine.New(cfg, exchanges, mem, tg)
+	eng := engine.New(cfg, exchanges, store, tg)
+
 	log.Printf("funding bot started mode=%s exchanges=%d", cfg.BotMode, len(exchanges))
+
 	if err := eng.Run(ctx); err != nil {
 		log.Fatalf("engine: %v", err)
 	}
@@ -85,6 +100,7 @@ func main() {
 
 func buildExchanges(cfg config.Config) []domain.Exchange {
 	exchanges := []domain.Exchange{}
+
 	if cfg.Binance.Enabled {
 		exchanges = append(exchanges, binance.New(cfg.Binance.BaseURL, cfg.Binance.APIKey, cfg.Binance.APISecret))
 	}
@@ -112,46 +128,88 @@ func buildExchanges(cfg config.Config) []domain.Exchange {
 	if cfg.HTX.Enabled {
 		exchanges = append(exchanges, htx.New(cfg.HTX.BaseURL, cfg.HTX.APIKey, cfg.HTX.APISecret))
 	}
+
 	return exchanges
 }
 
 func startupText(cfg config.Config, store *storage.Store) string {
 	balances := store.Balances()
 	statuses := store.ExchangeStatuses()
-	msg := fmt.Sprintf("👋 <b>Funding Bot активен</b>\n\nРежим: <b>%s</b>\n\n", cfg.BotMode)
+
+	msg := fmt.Sprintf("Funding Bot активен\n\nРежим: %s\n\n", cfg.BotMode)
+
 	for _, ex := range domain.AllExchangeNames {
 		bal := balances[ex]
+
 		status := "Not Connected"
 		if statuses[ex] {
 			status = "Connected"
 		}
-		msg += fmt.Sprintf("%s: <b>%s</b>\nBalance: %.2f available / %.2f wallet USDT\n\n", ex, status, bal.AvailableUSDT, bal.WalletUSDT)
+
+		msg += fmt.Sprintf(
+			"%s: %s\nBalance: %.2f available / %.2f wallet USDT\n\n",
+			ex,
+			status,
+			bal.AvailableUSDT,
+			bal.WalletUSDT,
+		)
 	}
-	msg += fmt.Sprintf("Min funding: +%.2f%%\nMin 24h volume: %.0f USDT\nLeverage: isolated %dx\nUSDT per trade: %.2f\n\nDashboard: %s", cfg.MinFundingRate*100, cfg.Min24hVolumeUSDT, cfg.Leverage, cfg.USDTPerTrade, cfg.DashboardPublicURL)
+
+	msg += fmt.Sprintf(
+		"Min funding: +%.2f%%\nMin 24h volume: %.0f USDT\nLeverage: isolated %dx\nUSDT per trade: %.2f\n\nDashboard: %s",
+		cfg.MinFundingRate*100,
+		cfg.Min24hVolumeUSDT,
+		cfg.Leverage,
+		cfg.USDTPerTrade,
+		cfg.DashboardPublicURL,
+	)
+
 	return msg
 }
 
 func activeText(store *storage.Store) string {
 	trades := store.ActiveTrades()
+
 	if len(trades) == 0 {
-		return "📊 <b>Текущие сделки</b>\n\nАктивных сделок сейчас нет."
+		return "Текущие сделки\n\nАктивных сделок сейчас нет."
 	}
-	msg := "📊 <b>Текущие сделки</b>\n\n"
+
+	msg := "Текущие сделки\n\n"
+
 	for _, t := range trades {
-		msg += fmt.Sprintf("%s %s | %s | %s\nEntry: %.8f\nTP: %.8f\nPnL: %.4f USDT\nStatus: %s\n\n", t.Exchange, t.Symbol, t.Side, t.Scenario, t.EntryPrice, t.TakeProfitPrice, t.UnrealizedPNL, t.Status)
+		msg += fmt.Sprintf(
+			"%s %s | %s | %s\nEntry: %.8f\nTP: %.8f\nPnL: %.4f USDT\nStatus: %s\n\n",
+			t.Exchange,
+			t.Symbol,
+			t.Side,
+			t.Scenario,
+			t.EntryPrice,
+			t.TakeProfitPrice,
+			t.UnrealizedPNL,
+			t.Status,
+		)
 	}
+
 	return msg
 }
 
 func countdownText() string {
 	nowUTC := time.Now().UTC()
 	nowPlus3 := time.Now()
-	return fmt.Sprintf("⏳ <b>Countdown до funding</b>\n\nТекущее время UTC+3: %s\n1h: %s\n4h: %s\n8h: %s", nowPlus3.Format("15:04:05"), fmtDuration(nextFundingUTC(nowUTC, 1).Sub(nowUTC)), fmtDuration(nextFundingUTC(nowUTC, 4).Sub(nowUTC)), fmtDuration(nextFundingUTC(nowUTC, 8).Sub(nowUTC)))
+
+	return fmt.Sprintf(
+		"⏳ Countdown до funding\n\nТекущее время UTC+3: %s\n1h: %s\n4h: %s\n8h: %s",
+		nowPlus3.Format("15:04:05"),
+		fmtDuration(nextFundingUTC(nowUTC, 1).Sub(nowUTC)),
+		fmtDuration(nextFundingUTC(nowUTC, 4).Sub(nowUTC)),
+		fmtDuration(nextFundingUTC(nowUTC, 8).Sub(nowUTC)),
+	)
 }
 
 func nextFundingUTC(now time.Time, hours int) time.Time {
 	base := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	step := time.Duration(hours) * time.Hour
+
 	for t := base; ; t = t.Add(step) {
 		if t.After(now) {
 			return t
@@ -163,8 +221,26 @@ func fmtDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0
 	}
+
 	h := int(d.Hours())
 	m := int(d.Minutes()) % 60
 	s := int(d.Seconds()) % 60
+
 	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+}
+func openPostgresWithRetry(dsn string, attempts int, delay time.Duration) (*storage.Postgres, error) {
+	var lastErr error
+
+	for i := 1; i <= attempts; i++ {
+		pg, err := storage.OpenPostgres(dsn)
+		if err == nil {
+			return pg, nil
+		}
+
+		lastErr = err
+		log.Printf("postgres connection attempt %d/%d failed: %v", i, attempts, err)
+		time.Sleep(delay)
+	}
+
+	return nil, fmt.Errorf("postgres connection failed after %d attempts: %w", attempts, lastErr)
 }
