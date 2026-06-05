@@ -84,7 +84,13 @@ func (e *Engine) scanOnce(ctx context.Context) error {
 		candidates, err := e.fetchCandidatesWithTimeout(ex, e.exchangeScanTimeout(ex))
 		if err != nil {
 			connected := ex.Connected()
-			e.store.SetExchangeStatus(ex.Name(), connected, err.Error())
+
+			if connected {
+				e.store.SetExchangeStatus(ex.Name(), true, "")
+			} else {
+				e.store.SetExchangeStatus(ex.Name(), false, err.Error())
+			}
+
 			e.store.AddLog(fmt.Sprintf("%s candidates error: %v", ex.Name(), err))
 			continue
 		}
@@ -191,6 +197,16 @@ func (e *Engine) handleWarningsAndPlans(selected map[domain.ExchangeName]domain.
 		until := c.NextFundingTime.Sub(now)
 
 		if until <= e.cfg.PreFundingWarning && until > 0 && !e.planned[key] {
+			if !e.hasEnoughAvailableBalance(c.Exchange) {
+				e.store.AddLog(fmt.Sprintf(
+					"skip planned %s %s: insufficient available balance",
+					c.Exchange,
+					c.Symbol,
+				))
+				e.planned[key] = true
+				continue
+			}
+
 			_ = e.tg.Planned(c)
 			e.store.AddLog(fmt.Sprintf("planned %s %s funding %.4f%%", c.Exchange, c.Symbol, c.FundingRate*100))
 			e.planned[key] = true
@@ -200,6 +216,19 @@ func (e *Engine) handleWarningsAndPlans(selected map[domain.ExchangeName]domain.
 			e.store.AddLog(fmt.Sprintf("entry window reached for %s %s mode=%s", c.Exchange, c.Symbol, e.cfg.BotMode))
 		}
 	}
+}
+func (e *Engine) hasEnoughAvailableBalance(exchange domain.ExchangeName) bool {
+	balances := e.store.Balances()
+	balance, ok := balances[exchange]
+	if !ok {
+		return false
+	}
+
+	if !balance.PrivateOK {
+		return false
+	}
+
+	return balance.AvailableUSDT >= e.cfg.USDTPerTrade
 }
 
 type candidateResult struct {

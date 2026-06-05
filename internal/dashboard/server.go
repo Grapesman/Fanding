@@ -75,7 +75,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			Name:       name,
 			Enabled:    s.exchangeEnabled(name),
 			Connected:  statuses[name],
-			PublicOK:   statuses[name] && errText == "",
+			PublicOK:   statuses[name],
 			PrivateOK:  bal.PrivateOK,
 			Balance:    bal,
 			Error:      errText,
