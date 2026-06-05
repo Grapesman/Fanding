@@ -129,9 +129,10 @@
 
         .cards {
             display: grid;
-            grid-template-columns: 1fr 2.3fr 1.2fr;
+            grid-template-columns: .68fr 3.35fr .82fr;
             gap: 14px;
             margin: 18px 0;
+            align-items: stretch;
         }
 
         @media (max-width: 1100px) {
@@ -141,6 +142,7 @@
         }
 
         .card {
+            height: 100%;
             background: var(--card);
             border: 1px solid var(--line);
             border-radius: var(--radius);
@@ -171,34 +173,43 @@
 
         .exchange-grid {
             display: grid;
-            grid-template-columns: repeat(9, minmax(92px, 1fr));
+            grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 8px;
+            overflow: visible;
+            padding-right: 0;
         }
 
-        @media (max-width: 1220px) {
+        @media (max-width: 1250px) {
             .exchange-grid {
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: 1fr;
             }
         }
 
         .ex-mini {
+            display: grid;
+            grid-template-columns: 78px 76px 82px minmax(0, 1fr);
+            align-items: center;
+            gap: 7px;
             background: var(--soft);
             border: 1px solid var(--line);
-            border-radius: 16px;
-            padding: 10px;
-            min-height: 82px;
+            border-radius: 15px;
+            padding: 8px 9px;
+            min-height: 40px;
         }
 
         .ex-top {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            gap: 8px;
+            gap: 7px;
+            min-width: 0;
         }
 
         .ex-name {
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 900;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .dot {
@@ -214,23 +225,56 @@
             background: var(--green);
         }
 
-        .dot.warn {
-            background: var(--orange);
-        }
-
         .dot.no {
             background: var(--red);
         }
 
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: fit-content;
+            min-width: 70px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 900;
+            line-height: 1;
+            letter-spacing: .2px;
+            white-space: nowrap;
+        }
+
+        .status-pill.ok {
+            color: #0f7a3b;
+            background: rgba(52,199,89,.16);
+            border: 1px solid rgba(52,199,89,.35);
+        }
+
+        .status-pill.warn {
+            color: #a05a00;
+            background: rgba(255,149,0,.16);
+            border: 1px solid rgba(255,149,0,.35);
+        }
+
+        .status-pill.no {
+            color: #b42318;
+            background: rgba(255,59,48,.14);
+            border: 1px solid rgba(255,59,48,.35);
+        }
+
         .ex-bal {
-            font-size: 12px;
+            font-size: 10px;
             color: var(--muted);
-            margin-top: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .ex-bal strong {
-            font-size: 13px;
+            display: block;
+            font-size: 12px;
             color: var(--text);
+            line-height: 1.1;
         }
 
         .ex-err {
@@ -239,7 +283,7 @@
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            margin-top: 5px;
+            margin-top: 2px;
         }
 
         .timer-grid {
@@ -346,7 +390,7 @@
         }
 
         .control input[type="search"] {
-            width: 190px;
+            width: 180px;
         }
 
         .tableWrap {
@@ -367,7 +411,7 @@
 
         th,
         td {
-            padding: 12px 14px;
+            padding: 12px 12px;
             text-align: left;
             border-bottom: 1px solid var(--line);
             font-size: 13px;
@@ -387,6 +431,16 @@
             cursor: pointer;
         }
 
+        col.col-star { width: 54px; }
+        col.col-symbol { width: 150px; }
+        col.col-price { width: 115px; }
+        col.col-funding { width: 125px; }
+        col.col-volume { width: 180px; }
+        col.col-entry { width: 150px; }
+        col.col-tp { width: 150px; }
+        col.col-pass { width: 130px; }
+        col.col-updated { width: 115px; }
+
         tbody tr:hover {
             background: var(--soft);
         }
@@ -399,39 +453,6 @@
             font-size: 10px;
             color: var(--muted);
             margin-left: 4px;
-        }
-
-        .col-star {
-            width: 52px;
-            text-align: center;
-        }
-
-        .col-symbol {
-            width: 150px;
-        }
-
-        .col-price {
-            width: 120px;
-        }
-
-        .col-funding {
-            width: 130px;
-        }
-
-        .col-volume {
-            width: 170px;
-        }
-
-        .col-edit {
-            width: 160px;
-        }
-
-        .col-pass {
-            width: 130px;
-        }
-
-        .col-updated {
-            width: 110px;
         }
 
         .badge {
@@ -459,28 +480,24 @@
             border: 1px solid rgba(255,59,48,.35);
         }
 
-        .edit-wrap {
-            display: inline-flex;
+        .editable-cell {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 24px;
             align-items: center;
-            justify-content: flex-start;
-            gap: 7px;
-            max-width: 100%;
-            min-width: 0;
-            white-space: nowrap;
-            vertical-align: middle;
+            gap: 8px;
+            max-width: 124px;
         }
 
-        .edit-value {
-            display: inline-block;
-            max-width: calc(100% - 30px);
+        .editable-value {
+            display: block;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
             font-variant-numeric: tabular-nums;
+            font-weight: 700;
         }
 
         .edit-btn {
-            flex: 0 0 auto;
             width: 22px;
             height: 22px;
             border: 0;
@@ -586,16 +603,16 @@
     let sortState = {};
 
     const baseCols = [
-        ['selected', '★', 'col-star'],
-        ['symbol', 'Symbol', 'col-symbol'],
-        ['price', 'Price', 'col-price'],
-        ['funding_display', 'Funding', 'col-funding'],
-        ['volume_24h_usdt', '24h Volume', 'col-volume'],
-        ['planned_entry', 'Planned Entry', 'col-edit'],
-        ['safe_tp_price', 'Safe TP', 'col-edit'],
-        ['pass_funding', 'Pass Funding', 'col-pass'],
-        ['pass_volume', 'Pass Volume', 'col-pass'],
-        ['updated_at', 'Updated', 'col-updated']
+        ['selected', '★'],
+        ['symbol', 'Symbol'],
+        ['price', 'Price'],
+        ['funding_display', 'Funding'],
+        ['volume_24h_usdt', '24h Volume'],
+        ['planned_entry', 'Planned Entry'],
+        ['safe_tp_price', 'Safe TP'],
+        ['pass_funding', 'Pass Funding'],
+        ['pass_volume', 'Pass Volume'],
+        ['updated_at', 'Updated']
     ];
 
     function escapeHtml(s) {
@@ -627,6 +644,22 @@
         if (n >= 100) return n.toFixed(2);
         if (n >= 1) return n.toFixed(4);
         return n.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+    }
+
+    function fmtPriceShort(n) {
+        n = Number(n || 0);
+        if (!n) return '—';
+        return n.toFixed(3);
+    }
+
+    function fmtPriceFull(n) {
+        n = Number(n || 0);
+        if (!n) return '—';
+
+        if (n >= 100) return n.toFixed(6);
+        if (n >= 1) return n.toFixed(8);
+
+        return n.toFixed(12).replace(/0+$/, '').replace(/\.$/, '');
     }
 
     function pass(x) {
@@ -668,9 +701,7 @@
         ];
 
         items.forEach((e, i) => {
-            if (!sortState[e.key]) {
-                sortState[e.key] = { key: 'funding_rate', dir: -1 };
-            }
+            if (!sortState[e.key]) sortState[e.key] = { key: 'funding_rate', dir: -1 };
 
             const b = document.createElement('button');
             b.className = 'tab' + (i === 0 ? ' active' : '');
@@ -701,31 +732,44 @@
 
     function exchangeSectionHtml(e) {
         return `
-        <div class="toolbar">
-          <h2>${escapeHtml(e.label)}</h2>
-          <div class="controls">
-            <label class="control">
-              Show rows
-              <input id="${e.key}Rows" type="number" min="1" value="10">
-            </label>
-            <label class="control">
-              Search
-              <input id="${e.key}Search" type="search" placeholder="BTC, ETH…">
-            </label>
-            <label class="control">
-              Filter
-              <select id="${e.key}Filter">
-                <option value="passed">Passed only</option>
-                <option value="all">All</option>
-                <option value="selected">Selected</option>
-              </select>
-            </label>
-          </div>
+      <div class="toolbar">
+        <h2>${escapeHtml(e.label)}</h2>
+        <div class="controls">
+          <label class="control">
+            Show rows
+            <input id="${e.key}Rows" type="number" min="1" value="10" oninput="renderAll(false)">
+          </label>
+          <label class="control">
+            Search
+            <input id="${e.key}Search" type="search" placeholder="BTC, ETH…" oninput="renderAll(false)">
+          </label>
+          <label class="control">
+            Filter
+            <select id="${e.key}Filter" onchange="renderAll(false)">
+              <option value="all" selected>All</option>
+              <option value="passed">Passed only</option>
+              <option value="selected">Selected</option>
+            </select>
+          </label>
         </div>
-        <div class="tableWrap">
-          <table id="${e.key}Table"></table>
-        </div>
-      `;
+      </div>
+      <div class="tableWrap">
+        <table id="${e.key}Table">
+          <colgroup>
+            <col class="col-star">
+            <col class="col-symbol">
+            <col class="col-price">
+            <col class="col-funding">
+            <col class="col-volume">
+            <col class="col-entry">
+            <col class="col-tp">
+            <col class="col-pass">
+            <col class="col-pass">
+            <col class="col-updated">
+          </colgroup>
+        </table>
+      </div>
+    `;
     }
 
     function showTab(key) {
@@ -742,31 +786,38 @@
         const grid = document.getElementById('exchangeGrid');
 
         grid.innerHTML = exchanges().map(ex => {
-            const connected = !!ex.connected;
+            const connected = !!ex.connected || !!ex.public_ok;
             const privateOK = !!ex.private_ok;
-            const cls = connected ? (privateOK ? 'ok' : 'warn') : 'no';
             const bal = ex.balance || {};
             const balance = Number(bal.available_usdt || bal.wallet_usdt || 0);
 
+            const dotCls = connected ? 'ok' : 'no';
+            const publicText = connected ? 'Public OK' : 'No public';
+            const privateText = privateOK ? 'Balance OK' : 'No balance';
+            const privateCls = privateOK ? 'ok' : 'warn';
+
             return `
-          <div class="ex-mini" title="${escapeHtml(ex.error || '')}">
-            <div class="ex-top">
-              <span class="ex-name">${escapeHtml(ex.name)}</span>
-              <span class="dot ${cls}"></span>
-            </div>
-            <div class="ex-bal">
-              Balance<br>
-              <strong>${Number.isFinite(balance) ? balance.toFixed(2) + ' USDT' : '—'}</strong>
-            </div>
+        <div class="ex-mini" title="${escapeHtml(ex.error || '')}">
+          <div class="ex-top">
+            <span class="dot ${dotCls}"></span>
+            <span class="ex-name">${escapeHtml(ex.name)}</span>
+          </div>
+
+          <span class="status-pill ${dotCls}">${publicText}</span>
+          <span class="status-pill ${privateCls}">${privateText}</span>
+
+          <div class="ex-bal">
+            Futures
+            <strong>${Number.isFinite(balance) ? balance.toFixed(2) + ' USDT' : '—'}</strong>
             ${ex.error ? `<div class="ex-err">${escapeHtml(ex.error)}</div>` : ''}
           </div>
-        `;
+        </div>
+      `;
         }).join('');
     }
 
     function val(row, key) {
-        if (key === 'funding_display') return Number(row.funding_rate || 0);
-        return row[key];
+        return key === 'funding_display' ? Number(row.funding_rate || 0) : row[key];
     }
 
     function renderCandidateTable(ex) {
@@ -780,14 +831,12 @@
         if (limit < 1) limit = 10;
 
         const q = String(document.getElementById(key + 'Search')?.value || '').trim().toUpperCase();
-        const filter = document.getElementById(key + 'Filter')?.value || 'passed';
+        const filter = document.getElementById(key + 'Filter')?.value || 'all';
         const st = sortState[key] || { key: 'funding_rate', dir: -1 };
 
         let data = [...rows];
 
-        if (q) {
-            data = data.filter(r => String(r.symbol || '').toUpperCase().includes(q));
-        }
+        if (q) data = data.filter(r => String(r.symbol || '').toUpperCase().includes(q));
 
         if (filter === 'passed') {
             data = data.filter(r =>
@@ -805,39 +854,51 @@
             let av = val(a, st.key);
             let bv = val(b, st.key);
 
-            if (typeof av === 'string') {
-                return String(av).localeCompare(String(bv)) * st.dir;
-            }
+            if (typeof av === 'string') return String(av).localeCompare(String(bv)) * st.dir;
 
             return ((Number(av) || 0) - (Number(bv) || 0)) * st.dir;
         }).slice(0, limit);
 
-        let html = '<thead><tr>' + baseCols.map(c => {
+        let html = `
+      <colgroup>
+        <col class="col-star">
+        <col class="col-symbol">
+        <col class="col-price">
+        <col class="col-funding">
+        <col class="col-volume">
+        <col class="col-entry">
+        <col class="col-tp">
+        <col class="col-pass">
+        <col class="col-pass">
+        <col class="col-updated">
+      </colgroup>
+    `;
+
+        html += '<thead><tr>' + baseCols.map(c => {
             return `
-          <th class="${c[2]}" data-table="${key}" data-key="${c[0]}">
-            ${c[1]} <span class="sort">${st.key === c[0] ? (st.dir > 0 ? '▲' : '▼') : '↕'}</span>
-          </th>
-        `;
+        <th data-table="${key}" data-key="${c[0]}">
+          ${c[1]} <span class="sort">${st.key === c[0] ? (st.dir > 0 ? '▲' : '▼') : '↕'}</span>
+        </th>
+      `;
         }).join('') + '</tr></thead><tbody>';
 
         if (!data.length) {
             html += `
-          <tr>
-            <td colspan="${baseCols.length}" class="empty">
-              No rows. Try lower MIN_FUNDING_RATE_PERCENT or switch filter to All.
-            </td>
-          </tr>
-        `;
+        <tr>
+          <td colspan="${baseCols.length}" class="empty">
+            No rows. Try lower MIN_FUNDING_RATE_PERCENT or switch filter to All.
+          </td>
+        </tr>
+      `;
         }
 
         data.forEach(r => {
             html += `<tr class="${r.selected ? 'selected-row' : ''}">`;
-            html += baseCols.map(c => cellHtml(r, c[0], c[2])).join('');
+            html += baseCols.map(c => cellHtml(r, c[0])).join('');
             html += '</tr>';
         });
 
         html += '</tbody>';
-
         table.innerHTML = html;
 
         table.querySelectorAll('th').forEach(th => {
@@ -856,63 +917,43 @@
         });
     }
 
-    function cellHtml(r, k, cls) {
+    function cellHtml(r, k) {
         const x = r[k];
-        const tdClass = cls ? ` class="${cls}"` : '';
 
-        if (k === 'selected') {
-            return `<td${tdClass}>${x ? '★' : ''}</td>`;
-        }
-
-        if (k === 'price') {
-            return `<td${tdClass}>${fmtPrice(x)}</td>`;
-        }
-
-        if (k === 'funding_display') {
-            return `<td${tdClass}>${fundingDisplay(r)}</td>`;
-        }
-
-        if (k === 'volume_24h_usdt') {
-            return `<td${tdClass}>${money(x)}</td>`;
-        }
+        if (k === 'selected') return '<td>' + (x ? '★' : '') + '</td>';
+        if (k === 'price') return '<td>' + fmtPrice(x) + '</td>';
+        if (k === 'funding_display') return '<td>' + fundingDisplay(r) + '</td>';
+        if (k === 'volume_24h_usdt') return '<td>' + money(x) + '</td>';
 
         if (k === 'planned_entry' || k === 'safe_tp_price') {
-            const value = fmtPrice(x);
-            const exchange = escapeHtml(r.exchange);
-            const symbol = escapeHtml(r.symbol);
-            const field = escapeHtml(k);
-            const numericValue = Number(x || 0);
+            const shortValue = fmtPriceShort(x);
+            const fullValue = fmtPriceFull(x);
 
             return `
-          <td${tdClass}>
-            <div class="edit-wrap">
-              <span class="edit-value" title="${value}">${value}</span>
-              <button
-                class="edit-btn"
-                title="Edit"
-                onclick="editCandidateValue(event,'${exchange}','${symbol}','${field}',${numericValue})"
-              >✎</button>
-            </div>
-          </td>
-        `;
+        <td>
+          <div class="editable-cell">
+            <span class="editable-value" title="${fullValue}">${shortValue}</span>
+            <button
+              class="edit-btn"
+              title="Full price: ${fullValue}"
+              onclick="editCandidateValue(event,'${escapeHtml(r.exchange)}','${escapeHtml(r.symbol)}','${k}',${Number(x || 0)})"
+            >✎</button>
+          </div>
+        </td>
+      `;
         }
 
-        if (k === 'pass_funding' || k === 'pass_volume') {
-            return `<td${tdClass}>${pass(x)}</td>`;
-        }
+        if (k === 'pass_funding' || k === 'pass_volume') return '<td>' + pass(x) + '</td>';
+        if (k === 'updated_at') return '<td>' + (x ? new Date(x).toLocaleTimeString('ru-RU', { hour12: false }) : '—') + '</td>';
 
-        if (k === 'updated_at') {
-            return `<td${tdClass}>${x ? new Date(x).toLocaleTimeString('ru-RU', { hour12: false }) : '—'}</td>`;
-        }
-
-        return `<td${tdClass}>${escapeHtml(x)}</td>`;
+        return '<td>' + escapeHtml(x) + '</td>';
     }
 
     async function editCandidateValue(ev, exchange, symbol, field, currentValue) {
         ev.stopPropagation();
 
         const label = field === 'planned_entry' ? 'Planned Entry' : 'Safe TP';
-        const raw = prompt(`Введите новое значение для ${label} (${exchange} ${symbol})`, currentValue);
+        const raw = prompt(`Введите новое значение для ${label} (${exchange} ${symbol})`, fmtPriceFull(currentValue));
 
         if (raw === null) return;
 
@@ -951,22 +992,18 @@
             html += '<tr>' + cols.map(c => '<td>' + escapeHtml(r[c[0]] ?? '') + '</td>').join('') + '</tr>';
         });
 
-        html += '</tbody>';
-        t.innerHTML = html;
+        t.innerHTML = html + '</tbody>';
     }
 
     function renderAll(rebuild = false) {
         if (!state) return;
 
-        if (rebuild) {
-            buildShell();
-        }
+        if (rebuild) buildShell();
 
         document.getElementById('mode').textContent = String(state.mode || '—').toUpperCase();
         document.getElementById('serverInfo').textContent = 'Status: running';
 
         renderExchangeGrid();
-
         exchanges().forEach(renderCandidateTable);
 
         renderSimpleTable('activeTable', state.active || [], [
@@ -993,14 +1030,10 @@
         ]);
 
         const settings = document.getElementById('settingsBox');
-        if (settings) {
-            settings.textContent = JSON.stringify(state.settings || {}, null, 2);
-        }
+        if (settings) settings.textContent = JSON.stringify(state.settings || {}, null, 2);
 
         const logs = document.getElementById('logsBox');
-        if (logs) {
-            logs.textContent = (state.logs || []).join('\n');
-        }
+        if (logs) logs.textContent = (state.logs || []).join('\n');
     }
 
     async function load(rebuild = false) {
@@ -1010,7 +1043,6 @@
             const first = !state;
 
             state = newState;
-
             renderAll(rebuild || first);
         } catch (e) {
             document.getElementById('serverInfo').textContent = 'Status: API error ' + e.message;
