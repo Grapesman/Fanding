@@ -128,6 +128,8 @@ func (c *Client) Balance() (domain.Balance, error) {
 }
 
 func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
+	intervalBySymbol := c.fundingIntervals()
+
 	var premium []struct {
 		Symbol          string `json:"symbol"`
 		MarkPrice       string `json:"markPrice"`
@@ -202,9 +204,16 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 			spread = (ask - bid) / ((ask + bid) / 2)
 		}
 
+		intervalHours := intervalBySymbol[p.Symbol]
+		if intervalHours <= 0 {
+			intervalHours = 8
+		}
+
 		nextFunding := time.Time{}
 		if p.NextFundingTime > 0 {
 			nextFunding = time.UnixMilli(p.NextFundingTime)
+		} else {
+			nextFunding = nextFundingByInterval(now.UTC(), int(intervalHours))
 		}
 
 		out = append(out, domain.Candidate{
@@ -214,7 +223,7 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 			Price:                price,
 			MarkPrice:            mark,
 			FundingRate:          fr,
-			FundingIntervalHours: 8,
+			FundingIntervalHours: intervalHours,
 			NextFundingTime:      nextFunding,
 			Volume24hUSDT:        volumeBySymbol[p.Symbol],
 			Bid:                  bid,
@@ -225,6 +234,47 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 	}
 
 	return out, nil
+}
+
+func (c *Client) fundingIntervals() map[string]float64 {
+	out := map[string]float64{}
+
+	var rows []struct {
+		Symbol                   string  `json:"symbol"`
+		AdjustedFundingRateCap   string  `json:"adjustedFundingRateCap"`
+		AdjustedFundingRateFloor string  `json:"adjustedFundingRateFloor"`
+		FundingIntervalHours     float64 `json:"fundingIntervalHours"`
+		Disclaimer               bool    `json:"disclaimer"`
+	}
+
+	if err := c.getJSON("/fapi/v1/fundingInfo", nil, &rows); err != nil {
+		return out
+	}
+
+	for _, r := range rows {
+		if r.Symbol == "" || r.FundingIntervalHours <= 0 {
+			continue
+		}
+
+		out[r.Symbol] = r.FundingIntervalHours
+	}
+
+	return out
+}
+
+func nextFundingByInterval(now time.Time, hours int) time.Time {
+	if hours <= 0 {
+		hours = 8
+	}
+
+	base := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	step := time.Duration(hours) * time.Hour
+
+	for t := base; ; t = t.Add(step) {
+		if t.After(now) {
+			return t
+		}
+	}
 }
 
 func (c *Client) SetMarginAndLeverage(symbol string, leverage int, marginMode string) error {

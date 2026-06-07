@@ -239,7 +239,7 @@ type candidateResult struct {
 func (e *Engine) exchangeScanTimeout(ex domain.Exchange) time.Duration {
 	switch ex.Name() {
 	case domain.ExchangeBingX:
-		return 60 * time.Second
+		return 180 * time.Second
 	case domain.ExchangeOKX:
 		return 35 * time.Second
 	default:

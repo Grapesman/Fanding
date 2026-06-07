@@ -24,6 +24,43 @@ type Client struct {
 	http      *http.Client
 }
 
+type bingXTickerRow struct {
+	Symbol      string
+	LastPrice   string
+	QuoteVolume string
+	Volume      string
+	AskPrice    string
+	BidPrice    string
+	VolumeUSDT  float64
+}
+
+type bingXPremiumInfo struct {
+	Symbol        string
+	FundingRate   float64
+	MarkPrice     float64
+	IndexPrice    float64
+	NextFunding   time.Time
+	IntervalHours float64
+	OK            bool
+}
+
+type premiumPayload struct {
+	Symbol          string `json:"symbol"`
+	LastFundingRate string `json:"lastFundingRate"`
+	FundingRate     string `json:"fundingRate"`
+	MarkPrice       string `json:"markPrice"`
+	IndexPrice      string `json:"indexPrice"`
+
+	NextFundingTime flexibleInt `json:"nextFundingTime"`
+	FundingTime     flexibleInt `json:"fundingTime"`
+	UpdateTime      flexibleInt `json:"updateTime"`
+
+	FundingIntervalHours flexibleFloat `json:"fundingIntervalHours"`
+	FundingInterval      flexibleFloat `json:"fundingInterval"`
+	FundingIntervalHour  flexibleFloat `json:"fundingIntervalHour"`
+	Interval             flexibleFloat `json:"interval"`
+}
+
 func New(baseURL, apiKey, apiSecret string) *Client {
 	return &Client{
 		baseURL:   strings.TrimRight(strings.TrimSpace(baseURL), "/"),
@@ -34,7 +71,7 @@ func New(baseURL, apiKey, apiSecret string) *Client {
 }
 
 func (c *Client) Name() domain.ExchangeName {
-	return domain.ExchangeName("BingX")
+	return domain.ExchangeBingX
 }
 
 func (c *Client) Connected() bool {
@@ -51,8 +88,7 @@ func (c *Client) ServerTime() (time.Time, error) {
 		} `json:"data"`
 	}
 
-	err := c.getJSON("/openApi/swap/v2/server/time", nil, &out)
-	if err != nil {
+	if err := c.getJSON("/openApi/swap/v2/server/time", nil, &out); err != nil {
 		return time.Time{}, err
 	}
 
@@ -169,84 +205,278 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 		return nil, fmt.Errorf("bingx ticker code=%d msg=%s", tick.Code, tick.Msg)
 	}
 
-	now := time.Now()
-	res := make([]domain.Candidate, 0, len(tick.Data))
+	rows := make([]bingXTickerRow, 0, len(tick.Data))
 
 	for _, t := range tick.Data {
 		if !strings.Contains(t.Symbol, "USDT") {
 			continue
 		}
 
-		price, _ := strconv.ParseFloat(t.LastPrice, 64)
 		vol, _ := strconv.ParseFloat(t.QuoteVolume, 64)
 		if vol <= 0 {
 			vol, _ = strconv.ParseFloat(t.Volume, 64)
 		}
 
-		bid, _ := strconv.ParseFloat(t.BidPrice, 64)
-		ask, _ := strconv.ParseFloat(t.AskPrice, 64)
-
-		spread := 0.0
-		if bid > 0 && ask > 0 {
-			spread = (ask - bid) / ((ask + bid) / 2)
-		}
-
-		q := url.Values{}
-		q.Set("symbol", t.Symbol)
-
-		var prem struct {
-			Code int    `json:"code"`
-			Msg  string `json:"msg"`
-			Data struct {
-				LastFundingRate string `json:"lastFundingRate"`
-				FundingRate     string `json:"fundingRate"`
-				MarkPrice       string `json:"markPrice"`
-				NextFundingTime string `json:"nextFundingTime"`
-			} `json:"data"`
-		}
-
-		_ = c.getJSON("/openApi/swap/v2/quote/premiumIndex", q, &prem)
-
-		fr, _ := strconv.ParseFloat(firstNonEmpty(prem.Data.LastFundingRate, prem.Data.FundingRate), 64)
-		mark, _ := strconv.ParseFloat(prem.Data.MarkPrice, 64)
-		if mark <= 0 {
-			mark = price
-		}
-
-		nextMS, _ := strconv.ParseInt(prem.Data.NextFundingTime, 10, 64)
-
-		nextFunding := time.Time{}
-		if nextMS > 0 {
-			nextFunding = time.UnixMilli(nextMS)
-		} else {
-			nextFunding = nextFundingByInterval(now.UTC(), 8)
-		}
-
-		res = append(res, domain.Candidate{
-			Exchange:             c.Name(),
-			Symbol:               strings.ReplaceAll(t.Symbol, "-", ""),
-			NativeSymbol:         t.Symbol,
-			Price:                price,
-			MarkPrice:            mark,
-			FundingRate:          fr,
-			FundingIntervalHours: 8,
-			NextFundingTime:      nextFunding,
-			Volume24hUSDT:        vol,
-			Bid:                  bid,
-			Ask:                  ask,
-			Spread:               spread,
-			UpdatedAt:            now,
+		rows = append(rows, bingXTickerRow{
+			Symbol:      t.Symbol,
+			LastPrice:   t.LastPrice,
+			QuoteVolume: t.QuoteVolume,
+			Volume:      t.Volume,
+			AskPrice:    t.AskPrice,
+			BidPrice:    t.BidPrice,
+			VolumeUSDT:  vol,
 		})
 	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].VolumeUSDT > rows[j].VolumeUSDT
+	})
+
+	// BingX отдаёт funding одним bulk-запросом.
+	// Но в dashboard пока выводим 250 самых ликвидных инструментов,
+	// чтобы таблица и скан работали стабильно.
+	if len(rows) > 250 {
+		rows = rows[:250]
+	}
+
+	now := time.Now().UTC()
+	premiumBySymbol := c.fetchPremiumMap(now)
+
+	fmt.Printf("BingX premium map loaded: %d, rows: %d\n", len(premiumBySymbol), len(rows))
+
+	res := make([]domain.Candidate, 0, len(rows))
+
+	for _, row := range rows {
+		res = append(res, c.buildCandidate(row, now, premiumBySymbol))
+	}
+
+	sort.Slice(res, func(i, j int) bool {
+		if res[i].FundingRate == res[j].FundingRate {
+			return res[i].Volume24hUSDT > res[j].Volume24hUSDT
+		}
+
+		return res[i].FundingRate > res[j].FundingRate
+	})
 
 	return res, nil
 }
 
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
+func (c *Client) buildCandidate(row bingXTickerRow, now time.Time, premiumBySymbol map[string]bingXPremiumInfo) domain.Candidate {
+	price, _ := strconv.ParseFloat(row.LastPrice, 64)
+
+	vol := row.VolumeUSDT
+	if vol <= 0 {
+		vol, _ = strconv.ParseFloat(row.QuoteVolume, 64)
 	}
-	return b
+	if vol <= 0 {
+		vol, _ = strconv.ParseFloat(row.Volume, 64)
+	}
+
+	bid, _ := strconv.ParseFloat(row.BidPrice, 64)
+	ask, _ := strconv.ParseFloat(row.AskPrice, 64)
+
+	spread := 0.0
+	if bid > 0 && ask > 0 {
+		spread = (ask - bid) / ((ask + bid) / 2)
+	}
+
+	premium, ok := premiumBySymbol[row.Symbol]
+	if !ok {
+		premium = bingXPremiumInfo{
+			Symbol:        row.Symbol,
+			FundingRate:   0,
+			MarkPrice:     price,
+			IndexPrice:    price,
+			NextFunding:   nextFundingByInterval(now, 8),
+			IntervalHours: 8,
+			OK:            false,
+		}
+	}
+
+	mark := premium.MarkPrice
+	if mark <= 0 {
+		mark = premium.IndexPrice
+	}
+	if mark <= 0 {
+		mark = price
+	}
+
+	nextFunding := premium.NextFunding
+	if nextFunding.IsZero() {
+		nextFunding = nextFundingByInterval(now, 8)
+	}
+
+	intervalHours := premium.IntervalHours
+	if intervalHours <= 0 {
+		intervalHours = inferIntervalFromNextFunding(now, nextFunding)
+	}
+	if intervalHours <= 0 {
+		intervalHours = 8
+	}
+
+	return domain.Candidate{
+		Exchange:             c.Name(),
+		Symbol:               strings.ReplaceAll(row.Symbol, "-", ""),
+		NativeSymbol:         row.Symbol,
+		Price:                price,
+		MarkPrice:            mark,
+		FundingRate:          premium.FundingRate,
+		FundingIntervalHours: intervalHours,
+		NextFundingTime:      nextFunding,
+		Volume24hUSDT:        vol,
+		Bid:                  bid,
+		Ask:                  ask,
+		Spread:               spread,
+		UpdatedAt:            now,
+	}
+}
+
+func (c *Client) fetchPremiumMap(now time.Time) map[string]bingXPremiumInfo {
+	out := map[string]bingXPremiumInfo{}
+
+	var resp struct {
+		Code int              `json:"code"`
+		Msg  string           `json:"msg"`
+		Data []premiumPayload `json:"data"`
+	}
+
+	if err := c.getJSON("/openApi/swap/v2/quote/premiumIndex", nil, &resp); err != nil {
+		fmt.Printf("BingX premium bulk error: %v\n", err)
+		return out
+	}
+
+	if resp.Code != 0 {
+		fmt.Printf("BingX premium bulk code=%d msg=%s\n", resp.Code, resp.Msg)
+		return out
+	}
+
+	for _, payload := range resp.Data {
+		info := parsePremiumPayload(payload, now)
+		if info.Symbol == "" {
+			continue
+		}
+
+		out[info.Symbol] = info
+	}
+
+	return out
+}
+
+func parsePremiumPayload(p premiumPayload, now time.Time) bingXPremiumInfo {
+	fr, _ := strconv.ParseFloat(firstNonEmpty(p.LastFundingRate, p.FundingRate), 64)
+
+	mark, _ := strconv.ParseFloat(p.MarkPrice, 64)
+	index, _ := strconv.ParseFloat(p.IndexPrice, 64)
+
+	nextRaw := int64(p.NextFundingTime)
+	if nextRaw <= 0 {
+		nextRaw = int64(p.FundingTime)
+	}
+
+	next := parseBingXFundingTime(now, nextRaw)
+
+	interval := extractIntervalHours(
+		p.FundingIntervalHours,
+		p.FundingInterval,
+		p.FundingIntervalHour,
+		p.Interval,
+	)
+
+	if interval <= 0 {
+		interval = inferIntervalFromNextFunding(now, next)
+	}
+
+	if interval <= 0 {
+		interval = 8
+	}
+
+	return bingXPremiumInfo{
+		Symbol:        p.Symbol,
+		FundingRate:   fr,
+		MarkPrice:     mark,
+		IndexPrice:    index,
+		NextFunding:   next,
+		IntervalHours: interval,
+		OK:            true,
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+
+	return ""
+}
+
+func parseBingXFundingTime(now time.Time, v int64) time.Time {
+	if v <= 0 {
+		return nextFundingByInterval(now.UTC(), 8)
+	}
+
+	// Unix milliseconds.
+	if v > 1_000_000_000_000 {
+		return time.UnixMilli(v).UTC()
+	}
+
+	// Remaining time in milliseconds.
+	if v < 7*24*60*60*1000 {
+		return now.UTC().Add(time.Duration(v) * time.Millisecond)
+	}
+
+	return nextFundingByInterval(now.UTC(), 8)
+}
+
+func extractIntervalHours(values ...flexibleFloat) float64 {
+	for _, raw := range values {
+		v := float64(raw)
+		if v <= 0 {
+			continue
+		}
+
+		// Milliseconds.
+		if v >= 3600000 && int64(v)%3600000 == 0 {
+			return v / 3600000
+		}
+
+		// Seconds.
+		if v >= 3600 && int64(v)%3600 == 0 {
+			return v / 3600
+		}
+
+		// Hours.
+		if v > 0 && v <= 24 {
+			return v
+		}
+	}
+
+	return 0
+}
+
+func inferIntervalFromNextFunding(now time.Time, next time.Time) float64 {
+	if next.IsZero() {
+		return 0
+	}
+
+	next = next.UTC()
+
+	if next.Minute() != 0 || next.Second() != 0 {
+		return 0
+	}
+
+	h := next.Hour()
+
+	if h%4 != 0 {
+		return 1
+	}
+
+	if h%8 != 0 {
+		return 4
+	}
+
+	return 8
 }
 
 func nextFundingByInterval(now time.Time, hours int) time.Time {
@@ -285,6 +515,19 @@ func (c *Client) ClosePositionMarket(symbol string) error {
 }
 
 func (c *Client) getJSON(path string, q url.Values, dst any) error {
+	body, err := c.getRaw(path, q)
+	if err != nil {
+		return err
+	}
+
+	if err := json.Unmarshal(body, dst); err != nil {
+		return fmt.Errorf("bingx GET %s decode error: %w; body=%s", path, err, string(body))
+	}
+
+	return nil
+}
+
+func (c *Client) getRaw(path string, q url.Values) ([]byte, error) {
 	u := c.baseURL + path
 	if q != nil && len(q) > 0 {
 		u += "?" + q.Encode()
@@ -292,7 +535,7 @@ func (c *Client) getJSON(path string, q url.Values, dst any) error {
 
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	req.Header.Set("Accept", "application/json")
@@ -301,21 +544,17 @@ func (c *Client) getJSON(path string, q url.Values, dst any) error {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("bingx GET %s: %s", path, string(body))
+		return nil, fmt.Errorf("bingx GET %s: %s", path, string(body))
 	}
 
-	if err := json.Unmarshal(body, dst); err != nil {
-		return fmt.Errorf("bingx GET %s decode error: %w; body=%s", path, err, string(body))
-	}
-
-	return nil
+	return body, nil
 }
 
 func (c *Client) signedGET(path string, params url.Values, dst any) error {

@@ -215,6 +215,8 @@ func (c *Client) Balance() (domain.Balance, error) {
 }
 
 func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
+	intervalBySymbol := c.contractFundingIntervals()
+
 	q := url.Values{}
 	q.Set("productType", "USDT-FUTURES")
 
@@ -222,18 +224,20 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 		Data []struct {
-			Symbol              string `json:"symbol"`
-			LastPr              string `json:"lastPr"`
-			MarkPrice           string `json:"markPrice"`
-			IndexPrice          string `json:"indexPrice"`
-			FundingRate         string `json:"fundingRate"`
-			FundingRateInterval string `json:"fundingRateInterval"`
-			NextUpdate          string `json:"nextUpdate"`
-			UsdtVolume          string `json:"usdtVolume"`
-			BaseVolume          string `json:"baseVolume"`
-			QuoteVolume         string `json:"quoteVolume"`
-			BidPr               string `json:"bidPr"`
-			AskPr               string `json:"askPr"`
+			Symbol              string        `json:"symbol"`
+			LastPr              flexibleFloat `json:"lastPr"`
+			MarkPrice           flexibleFloat `json:"markPrice"`
+			IndexPrice          flexibleFloat `json:"indexPrice"`
+			FundingRate         flexibleFloat `json:"fundingRate"`
+			FundingRateInterval flexibleFloat `json:"fundingRateInterval"`
+			FundInterval        flexibleFloat `json:"fundInterval"`
+			NextUpdate          flexibleInt   `json:"nextUpdate"`
+			NextFundingTime     flexibleInt   `json:"nextFundingTime"`
+			UsdtVolume          flexibleFloat `json:"usdtVolume"`
+			BaseVolume          flexibleFloat `json:"baseVolume"`
+			QuoteVolume         flexibleFloat `json:"quoteVolume"`
+			BidPr               flexibleFloat `json:"bidPr"`
+			AskPr               flexibleFloat `json:"askPr"`
 		} `json:"data"`
 	}
 
@@ -245,7 +249,7 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 		return nil, fmt.Errorf("bitget tickers: %s", out.Msg)
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	res := make([]domain.Candidate, 0, len(out.Data))
 
 	for _, t := range out.Data {
@@ -253,46 +257,48 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 			continue
 		}
 
-		last, _ := strconv.ParseFloat(t.LastPr, 64)
-		mark, _ := strconv.ParseFloat(t.MarkPrice, 64)
+		last := float64(t.LastPr)
+
+		mark := float64(t.MarkPrice)
 		if mark <= 0 {
-			mark, _ = strconv.ParseFloat(t.IndexPrice, 64)
+			mark = float64(t.IndexPrice)
 		}
 		if mark <= 0 {
 			mark = last
 		}
 
-		fr, _ := strconv.ParseFloat(t.FundingRate, 64)
-
-		interval, _ := strconv.ParseFloat(t.FundingRateInterval, 64)
-		if interval <= 0 {
-			interval = 8
-		}
-
-		vol, _ := strconv.ParseFloat(t.UsdtVolume, 64)
+		vol := float64(t.UsdtVolume)
 		if vol <= 0 {
-			vol, _ = strconv.ParseFloat(t.QuoteVolume, 64)
+			vol = float64(t.QuoteVolume)
 		}
 		if vol <= 0 {
-			baseVol, _ := strconv.ParseFloat(t.BaseVolume, 64)
-			vol = baseVol * last
+			vol = float64(t.BaseVolume) * last
 		}
 
-		bid, _ := strconv.ParseFloat(t.BidPr, 64)
-		ask, _ := strconv.ParseFloat(t.AskPr, 64)
+		bid := float64(t.BidPr)
+		ask := float64(t.AskPr)
 
 		spread := 0.0
 		if bid > 0 && ask > 0 {
 			spread = (ask - bid) / ((ask + bid) / 2)
 		}
 
-		nextMS, _ := strconv.ParseInt(t.NextUpdate, 10, 64)
+		intervalHours := extractIntervalHours(t.FundingRateInterval, t.FundInterval)
+		if intervalHours <= 0 {
+			intervalHours = intervalBySymbol[t.Symbol]
+		}
+		if intervalHours <= 0 {
+			intervalHours = 8
+		}
 
-		nextFunding := time.Time{}
-		if nextMS > 0 {
-			nextFunding = time.UnixMilli(nextMS)
-		} else {
-			nextFunding = nextFundingByInterval(now.UTC(), int(interval))
+		nextRaw := int64(t.NextFundingTime)
+		if nextRaw <= 0 {
+			nextRaw = int64(t.NextUpdate)
+		}
+
+		nextFunding := parseBitgetFundingTime(nextRaw)
+		if nextFunding.IsZero() {
+			nextFunding = nextFundingByInterval(now, int(intervalHours))
 		}
 
 		res = append(res, domain.Candidate{
@@ -301,8 +307,8 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 			NativeSymbol:         t.Symbol,
 			Price:                last,
 			MarkPrice:            mark,
-			FundingRate:          fr,
-			FundingIntervalHours: interval,
+			FundingRate:          float64(t.FundingRate),
+			FundingIntervalHours: intervalHours,
 			NextFundingTime:      nextFunding,
 			Volume24hUSDT:        vol,
 			Bid:                  bid,
@@ -313,6 +319,86 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 	}
 
 	return res, nil
+}
+
+func (c *Client) contractFundingIntervals() map[string]float64 {
+	out := map[string]float64{}
+
+	q := url.Values{}
+	q.Set("productType", "USDT-FUTURES")
+
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			Symbol       string        `json:"symbol"`
+			FundInterval flexibleFloat `json:"fundInterval"`
+			SymbolStatus string        `json:"symbolStatus"`
+			SymbolType   string        `json:"symbolType"`
+		} `json:"data"`
+	}
+
+	if err := c.getJSON("/api/v2/mix/market/contracts", q, &resp); err != nil {
+		fmt.Printf("Bitget contracts error: %v\n", err)
+		return out
+	}
+
+	if resp.Code != "" && resp.Code != "00000" {
+		fmt.Printf("Bitget contracts code=%s msg=%s\n", resp.Code, resp.Msg)
+		return out
+	}
+
+	for _, item := range resp.Data {
+		if item.Symbol == "" {
+			continue
+		}
+
+		interval := extractIntervalHours(item.FundInterval)
+		if interval <= 0 {
+			continue
+		}
+
+		out[item.Symbol] = interval
+	}
+
+	fmt.Printf("Bitget contract intervals loaded: %d\n", len(out))
+
+	return out
+}
+
+func parseBitgetFundingTime(v int64) time.Time {
+	if v <= 0 {
+		return time.Time{}
+	}
+
+	if v > 1_000_000_000_000 {
+		return time.UnixMilli(v).UTC()
+	}
+
+	return time.Time{}
+}
+
+func extractIntervalHours(values ...flexibleFloat) float64 {
+	for _, raw := range values {
+		v := float64(raw)
+		if v <= 0 {
+			continue
+		}
+
+		if v >= 3600000 && int64(v)%3600000 == 0 {
+			return v / 3600000
+		}
+
+		if v >= 3600 && int64(v)%3600 == 0 {
+			return v / 3600
+		}
+
+		if v > 0 && v <= 24 {
+			return v
+		}
+	}
+
+	return 0
 }
 
 func nextFundingByInterval(now time.Time, hours int) time.Time {
