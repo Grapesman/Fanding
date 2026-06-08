@@ -44,12 +44,12 @@ func (c *Client) Connected() bool {
 
 func (c *Client) ServerTime() (time.Time, error) {
 	var out struct {
-		RetCode int    `json:"retCode"`
-		RetMsg  string `json:"retMsg"`
-		Time    string `json:"time"`
+		RetCode int         `json:"retCode"`
+		RetMsg  string      `json:"retMsg"`
+		Time    flexibleInt `json:"time"`
 		Result  struct {
-			TimeSecond string `json:"timeSecond"`
-			TimeNano   string `json:"timeNano"`
+			TimeSecond flexibleInt `json:"timeSecond"`
+			TimeNano   string      `json:"timeNano"`
 		} `json:"result"`
 	}
 
@@ -61,16 +61,12 @@ func (c *Client) ServerTime() (time.Time, error) {
 		return time.Time{}, fmt.Errorf("bybit server time retCode=%d retMsg=%s", out.RetCode, out.RetMsg)
 	}
 
-	if out.Time != "" {
-		ms, _ := strconv.ParseInt(out.Time, 10, 64)
-		if ms > 0 {
-			return time.UnixMilli(ms), nil
-		}
+	if out.Time > 0 {
+		return time.UnixMilli(int64(out.Time)), nil
 	}
 
-	sec, _ := strconv.ParseInt(out.Result.TimeSecond, 10, 64)
-	if sec > 0 {
-		return time.Unix(sec, 0), nil
+	if out.Result.TimeSecond > 0 {
+		return time.Unix(int64(out.Result.TimeSecond), 0), nil
 	}
 
 	return time.Now(), nil
