@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +27,7 @@ type Client struct {
 }
 
 type htxFundingInfo struct {
+	ContractCode  string
 	Rate          float64
 	NextFunding   time.Time
 	IntervalHours float64
@@ -55,23 +58,23 @@ func (c *Client) ServerTime() (time.Time, error) {
 		TS     flexibleInt `json:"ts"`
 	}
 
-	if err := c.getJSON("/linear-swap-api/v1/swap_contract_info?contract_code=BTC-USDT", &out); err != nil {
+	if err := c.getJSON("/linear-swap-api/v1/swap_contract_info", nil, &out); err != nil {
 		return time.Time{}, err
 	}
 
 	if out.Status != "" && out.Status != "ok" {
-		return time.Time{}, fmt.Errorf("htx server time check status=%s", out.Status)
+		return time.Time{}, fmt.Errorf("HTX server time check status=%s", out.Status)
 	}
 
 	if out.TS > 0 {
-		return time.UnixMilli(int64(out.TS)), nil
+		return time.UnixMilli(int64(out.TS)).UTC(), nil
 	}
 
-	return time.Now(), nil
+	return time.Now().UTC(), nil
 }
 
 func (c *Client) Balance() (domain.Balance, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 
 	if c.apiKey == "" || c.apiSecret == "" {
 		return domain.Balance{
@@ -106,7 +109,7 @@ func (c *Client) Balance() (domain.Balance, error) {
 			Exchange:  c.Name(),
 			PrivateOK: false,
 			Error:     "HTX futures balance error: " + lastErr.Error(),
-			UpdatedAt: time.Now(),
+			UpdatedAt: time.Now().UTC(),
 		}, lastErr
 	}
 
@@ -114,298 +117,146 @@ func (c *Client) Balance() (domain.Balance, error) {
 		Exchange:  c.Name(),
 		PrivateOK: false,
 		Error:     "HTX USDT futures balance not found",
-		UpdatedAt: time.Now(),
+		UpdatedAt: time.Now().UTC(),
 	}, nil
 }
 
 func (c *Client) balanceFromEndpoint(endpoint string) (domain.Balance, error) {
-	raw, err := c.signedPOSTRaw(endpoint, map[string]any{})
-	if err != nil {
+	var out struct {
+		Status string      `json:"status"`
+		ErrMsg string      `json:"err_msg"`
+		TS     flexibleInt `json:"ts"`
+		Data   []struct {
+			MarginAsset       string        `json:"margin_asset"`
+			Symbol            string        `json:"symbol"`
+			ContractCode      string        `json:"contract_code"`
+			MarginBalance     flexibleFloat `json:"margin_balance"`
+			MarginStatic      flexibleFloat `json:"margin_static"`
+			MarginAvailable   flexibleFloat `json:"margin_available"`
+			WithdrawAvailable flexibleFloat `json:"withdraw_available"`
+			ProfitReal        flexibleFloat `json:"profit_real"`
+			ProfitUnreal      flexibleFloat `json:"profit_unreal"`
+			RiskRate          flexibleFloat `json:"risk_rate"`
+			LiquidationPrice  flexibleFloat `json:"liquidation_price"`
+			LeverRate         flexibleFloat `json:"lever_rate"`
+			AdjustFactor      flexibleFloat `json:"adjust_factor"`
+			MarginFrozen      flexibleFloat `json:"margin_frozen"`
+			MarginPosition    flexibleFloat `json:"margin_position"`
+			MarginOrder       flexibleFloat `json:"margin_order"`
+			SubAccountName    string        `json:"sub_account_name"`
+			TradePartition    string        `json:"trade_partition"`
+		} `json:"data"`
+	}
+
+	body := map[string]string{
+		"margin_asset": "USDT",
+	}
+
+	if err := c.signedPOST(endpoint, body, &out); err != nil {
 		return domain.Balance{}, err
 	}
 
-	var envelope struct {
-		Status  string          `json:"status"`
-		ErrMsg  string          `json:"err_msg"`
-		ErrMsg2 string          `json:"err-msg"`
-		ErrCode flexibleInt     `json:"err_code"`
-		TS      flexibleInt     `json:"ts"`
-		Data    json.RawMessage `json:"data"`
+	if out.Status != "" && out.Status != "ok" {
+		return domain.Balance{}, fmt.Errorf("HTX balance endpoint=%s status=%s err=%s", endpoint, out.Status, out.ErrMsg)
 	}
 
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return domain.Balance{}, fmt.Errorf("HTX balance decode error endpoint=%s: %w; body=%s", endpoint, err, string(raw))
-	}
-
-	if envelope.Status != "" && envelope.Status != "ok" {
-		msg := envelope.ErrMsg
-		if msg == "" {
-			msg = envelope.ErrMsg2
-		}
-		if msg == "" {
-			msg = string(raw)
-		}
-		return domain.Balance{}, fmt.Errorf("HTX balance endpoint=%s status=%s code=%d msg=%s", endpoint, envelope.Status, envelope.ErrCode, msg)
-	}
-
-	wallet, available, ok := parseHTXUSDTBalance(envelope.Data)
-	if !ok {
-		return domain.Balance{}, fmt.Errorf("HTX USDT balance not found endpoint=%s body=%s", endpoint, string(raw))
-	}
-
-	return domain.Balance{
-		Exchange:      c.Name(),
-		WalletUSDT:    wallet,
-		AvailableUSDT: available,
-		PrivateOK:     true,
-		Error:         "",
-		UpdatedAt:     time.Now(),
-	}, nil
-}
-
-func parseHTXUSDTBalance(data json.RawMessage) (float64, float64, bool) {
-	if len(data) == 0 || string(data) == "null" {
-		return 0, 0, false
-	}
-
-	var rows []map[string]any
-	if err := json.Unmarshal(data, &rows); err == nil {
-		walletSum := 0.0
-		availableSum := 0.0
-		found := false
-
-		for _, row := range rows {
-			if !isHTXUSDTBalanceRow(row) {
-				continue
-			}
-
-			wallet := firstMapFloat(row,
-				"margin_balance",
-				"margin_static",
-				"account_balance",
-				"balance",
-				"total",
-				"total_balance",
-				"total_margin_balance",
-			)
-
-			available := firstMapFloat(row,
-				"withdraw_available",
-				"margin_available",
-				"available",
-				"available_balance",
-				"transferable",
-				"total_available_balance",
-			)
-
-			// Если API не отдаёт отдельный available, безопаснее показать wallet,
-			// но торговая логика позже всё равно будет проверять AvailableUSDT.
-			if available <= 0 {
-				available = firstMapFloat(row,
-					"margin_available",
-					"withdraw_available",
-					"available",
-				)
-			}
-
-			walletSum += wallet
-			availableSum += available
-			found = true
-		}
-
-		if found {
-			return walletSum, availableSum, true
-		}
-	}
-
-	var row map[string]any
-	if err := json.Unmarshal(data, &row); err == nil {
-		if nested, ok := row["list"]; ok {
-			if raw, err := json.Marshal(nested); err == nil {
-				return parseHTXUSDTBalance(raw)
-			}
-		}
-
-		if nested, ok := row["assets"]; ok {
-			if raw, err := json.Marshal(nested); err == nil {
-				return parseHTXUSDTBalance(raw)
-			}
-		}
-
-		if nested, ok := row["data"]; ok {
-			if raw, err := json.Marshal(nested); err == nil {
-				return parseHTXUSDTBalance(raw)
-			}
-		}
-
-		if isHTXUSDTBalanceRow(row) {
-			wallet := firstMapFloat(row,
-				"margin_balance",
-				"margin_static",
-				"account_balance",
-				"balance",
-				"total",
-				"total_balance",
-				"total_margin_balance",
-			)
-
-			available := firstMapFloat(row,
-				"withdraw_available",
-				"margin_available",
-				"available",
-				"available_balance",
-				"transferable",
-				"total_available_balance",
-			)
-
-			return wallet, available, true
-		}
-	}
-
-	return 0, 0, false
-}
-
-func isHTXUSDTBalanceRow(row map[string]any) bool {
-	for _, key := range []string{"margin_account", "margin_asset", "currency", "asset", "symbol"} {
-		v := strings.ToUpper(fmt.Sprint(row[key]))
-		if v == "USDT" || v == "USD" {
-			return true
-		}
-	}
-
-	contractCode := strings.ToUpper(fmt.Sprint(row["contract_code"]))
-	if strings.HasSuffix(contractCode, "-USDT") {
-		return true
-	}
-
-	// unified_account_info иногда отдаёт только числовые account-поля без явного currency.
-	if firstMapFloat(row, "margin_balance", "margin_static", "withdraw_available", "margin_available") > 0 {
-		return true
-	}
-
-	return false
-}
-
-func firstMapFloat(row map[string]any, keys ...string) float64 {
-	for _, key := range keys {
-		v, ok := row[key]
-		if !ok || v == nil {
+	for _, row := range out.Data {
+		if row.MarginAsset != "" && !strings.EqualFold(row.MarginAsset, "USDT") {
 			continue
 		}
 
-		switch x := v.(type) {
-		case float64:
-			if x != 0 {
-				return x
-			}
-		case int:
-			if x != 0 {
-				return float64(x)
-			}
-		case int64:
-			if x != 0 {
-				return float64(x)
-			}
-		case string:
-			n, _ := strconv.ParseFloat(strings.ReplaceAll(x, ",", ""), 64)
-			if n != 0 {
-				return n
-			}
-		case json.Number:
-			n, _ := x.Float64()
-			if n != 0 {
-				return n
-			}
+		wallet := firstNonZero(
+			float64(row.MarginBalance),
+			float64(row.MarginStatic),
+		)
+
+		available := firstNonZero(
+			float64(row.MarginAvailable),
+			float64(row.WithdrawAvailable),
+		)
+
+		if wallet == 0 && available == 0 {
+			continue
 		}
+
+		return domain.Balance{
+			Exchange:      c.Name(),
+			WalletUSDT:    wallet,
+			AvailableUSDT: available,
+			PrivateOK:     true,
+			Error:         "",
+			UpdatedAt:     time.Now().UTC(),
+		}, nil
 	}
 
-	return 0
+	return domain.Balance{}, fmt.Errorf("HTX USDT balance not found in endpoint %s", endpoint)
 }
 
 func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
-	var merged struct {
-		Status string `json:"status"`
-		Ticks  []struct {
-			ContractCode  string        `json:"contract_code"`
-			Close         flexibleFloat `json:"close"`
-			Amount        flexibleFloat `json:"amount"`
-			Vol           flexibleFloat `json:"vol"`
-			TradeTurnover flexibleFloat `json:"trade_turnover"`
-			Ask           []float64     `json:"ask"`
-			Bid           []float64     `json:"bid"`
-		} `json:"ticks"`
-	}
-
-	if err := c.getJSON("/linear-swap-ex/market/detail/batch_merged", &merged); err != nil {
+	contracts, err := c.contracts()
+	if err != nil {
 		return nil, err
 	}
 
-	if merged.Status != "" && merged.Status != "ok" {
-		return nil, fmt.Errorf("htx merged status: %s", merged.Status)
-	}
-
-	fundingBySymbol := c.fundingInfoMap()
-
+	tickers := c.tickers()
 	now := time.Now().UTC()
-	res := make([]domain.Candidate, 0, len(merged.Ticks))
 
-	for _, t := range merged.Ticks {
-		if t.ContractCode == "" || !strings.Contains(t.ContractCode, "USDT") {
+	out := make([]domain.Candidate, 0, len(contracts))
+
+	for _, ct := range contracts {
+		code := normalizeHTXContract(firstNonEmpty(ct.ContractCode, ct.Symbol))
+		if code == "" || !strings.Contains(code, "USDT") {
 			continue
 		}
 
-		price := float64(t.Close)
+		t := tickers[code]
+		funding := c.fetchFundingInfo(code, now)
 
-		bid := 0.0
-		ask := 0.0
+		price := firstNonZero(
+			float64(t.Close),
+			float64(t.LastPrice),
+			float64(t.MarkPrice),
+		)
 
-		if len(t.Bid) > 0 {
-			bid = t.Bid[0]
+		mark := firstNonZero(
+			float64(t.MarkPrice),
+			price,
+		)
+
+		intervalHours := funding.IntervalHours
+		if intervalHours <= 0 {
+			intervalHours = 8
 		}
-		if len(t.Ask) > 0 {
-			ask = t.Ask[0]
+
+		nextFunding := funding.NextFunding
+		if nextFunding.IsZero() {
+			nextFunding = nextFundingByInterval(now, int(intervalHours))
 		}
+
+		bid := float64(t.Bid)
+		ask := float64(t.Ask)
 
 		spread := 0.0
 		if bid > 0 && ask > 0 {
 			spread = (ask - bid) / ((ask + bid) / 2)
 		}
 
-		vol := float64(t.TradeTurnover)
-		if vol <= 0 {
-			vol = float64(t.Vol)
-		}
-		if vol <= 0 {
-			vol = float64(t.Amount) * price
-		}
+		volumeUSDT := firstNonZero(
+			float64(t.Amount),
+			float64(t.Vol)*price,
+			float64(t.Count)*price,
+		)
 
-		funding := fundingBySymbol[t.ContractCode]
-
-		nextFunding := funding.NextFunding
-		if nextFunding.IsZero() {
-			nextFunding = nextFundingByInterval(now, 8)
-		}
-
-		intervalHours := funding.IntervalHours
-		if intervalHours <= 0 {
-			intervalHours = inferIntervalFromNextFunding(now, nextFunding)
-		}
-		if intervalHours <= 0 {
-			intervalHours = 8
-		}
-
-		symbol := strings.ReplaceAll(t.ContractCode, "-", "")
-
-		res = append(res, domain.Candidate{
+		out = append(out, domain.Candidate{
 			Exchange:             c.Name(),
-			Symbol:               symbol,
-			NativeSymbol:         t.ContractCode,
+			Symbol:               htxUnifiedSymbol(code),
+			NativeSymbol:         code,
 			Price:                price,
-			MarkPrice:            price,
+			MarkPrice:            mark,
 			FundingRate:          funding.Rate,
 			FundingIntervalHours: intervalHours,
 			NextFundingTime:      nextFunding,
-			Volume24hUSDT:        vol,
+			Volume24hUSDT:        volumeUSDT,
 			Bid:                  bid,
 			Ask:                  ask,
 			Spread:               spread,
@@ -413,101 +264,1023 @@ func (c *Client) FundingCandidates() ([]domain.Candidate, error) {
 		})
 	}
 
-	return res, nil
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FundingRate == out[j].FundingRate {
+			return out[i].Volume24hUSDT > out[j].Volume24hUSDT
+		}
+
+		return out[i].FundingRate > out[j].FundingRate
+	})
+
+	return out, nil
 }
 
-func (c *Client) fundingInfoMap() map[string]htxFundingInfo {
-	out := map[string]htxFundingInfo{}
+type htxContract struct {
+	Symbol            string        `json:"symbol"`
+	ContractCode      string        `json:"contract_code"`
+	ContractSize      flexibleFloat `json:"contract_size"`
+	PriceTick         flexibleFloat `json:"price_tick"`
+	DeliveryDate      string        `json:"delivery_date"`
+	CreateDate        string        `json:"create_date"`
+	ContractStatus    flexibleInt   `json:"contract_status"`
+	SupportMarginMode string        `json:"support_margin_mode"`
+	BusinessType      string        `json:"business_type"`
+	Pair              string        `json:"pair"`
+	TradePartition    string        `json:"trade_partition"`
+	MinOrderValue     flexibleFloat `json:"min_order_value"`
+	OrderPriceType    string        `json:"order_price_type"`
+	ContractType      string        `json:"contract_type"`
+}
 
-	var fund struct {
+func (c *Client) contracts() ([]htxContract, error) {
+	var out struct {
+		Status string        `json:"status"`
+		ErrMsg string        `json:"err_msg"`
+		TS     flexibleInt   `json:"ts"`
+		Data   []htxContract `json:"data"`
+	}
+
+	if err := c.getJSON("/linear-swap-api/v1/swap_contract_info", nil, &out); err != nil {
+		return nil, err
+	}
+
+	if out.Status != "" && out.Status != "ok" {
+		return nil, fmt.Errorf("HTX contract info status=%s err=%s", out.Status, out.ErrMsg)
+	}
+
+	return out.Data, nil
+}
+
+type htxTicker struct {
+	ContractCode string        `json:"contract_code"`
+	Close        flexibleFloat `json:"close"`
+	LastPrice    flexibleFloat `json:"last_price"`
+	MarkPrice    flexibleFloat `json:"mark_price"`
+	Ask          flexibleFloat `json:"ask"`
+	Bid          flexibleFloat `json:"bid"`
+	Amount       flexibleFloat `json:"amount"`
+	Vol          flexibleFloat `json:"vol"`
+	Count        flexibleFloat `json:"count"`
+	High         flexibleFloat `json:"high"`
+	Low          flexibleFloat `json:"low"`
+	Open         flexibleFloat `json:"open"`
+}
+
+func (c *Client) tickers() map[string]htxTicker {
+	result := map[string]htxTicker{}
+
+	var out struct {
 		Status string `json:"status"`
-		Data   []struct {
-			ContractCode         string        `json:"contract_code"`
-			FundingRate          flexibleFloat `json:"funding_rate"`
-			EstimatedRate        flexibleFloat `json:"estimated_rate"`
-			FundingTime          flexibleInt   `json:"funding_time"`
-			NextFundingTime      flexibleInt   `json:"next_funding_time"`
-			SettlementTime       flexibleInt   `json:"settlement_time"`
-			FundingIntervalHours flexibleFloat `json:"funding_interval_hours"`
-			FundingInterval      flexibleFloat `json:"funding_interval"`
-			FundingRateInterval  flexibleFloat `json:"funding_rate_interval"`
-			Interval             flexibleFloat `json:"interval"`
-		} `json:"data"`
+		ErrMsg string `json:"err_msg"`
+		Tick   []struct {
+			ContractCode string          `json:"contract_code"`
+			Close        flexibleFloat   `json:"close"`
+			LastPrice    flexibleFloat   `json:"last_price"`
+			MarkPrice    flexibleFloat   `json:"mark_price"`
+			Ask          []flexibleFloat `json:"ask"`
+			Bid          []flexibleFloat `json:"bid"`
+			Amount       flexibleFloat   `json:"amount"`
+			Vol          flexibleFloat   `json:"vol"`
+			Count        flexibleFloat   `json:"count"`
+			High         flexibleFloat   `json:"high"`
+			Low          flexibleFloat   `json:"low"`
+			Open         flexibleFloat   `json:"open"`
+		} `json:"ticks"`
 	}
 
-	if err := c.getJSON("/linear-swap-api/v1/swap_batch_funding_rate", &fund); err != nil {
-		fmt.Printf("HTX funding batch error: %v\n", err)
-		return out
+	if err := c.getJSON("/linear-swap-ex/market/detail/batch_merged", nil, &out); err != nil {
+		return result
 	}
 
-	if fund.Status != "" && fund.Status != "ok" {
-		fmt.Printf("HTX funding batch status: %s\n", fund.Status)
-		return out
+	if out.Status != "" && out.Status != "ok" {
+		return result
 	}
 
-	now := time.Now().UTC()
-
-	for _, f := range fund.Data {
-		if f.ContractCode == "" {
+	for _, t := range out.Tick {
+		code := normalizeHTXContract(t.ContractCode)
+		if code == "" {
 			continue
 		}
 
-		rate := float64(f.FundingRate)
-		if rate == 0 {
-			rate = float64(f.EstimatedRate)
+		row := htxTicker{
+			ContractCode: code,
+			Close:        t.Close,
+			LastPrice:    t.LastPrice,
+			MarkPrice:    t.MarkPrice,
+			Amount:       t.Amount,
+			Vol:          t.Vol,
+			Count:        t.Count,
+			High:         t.High,
+			Low:          t.Low,
+			Open:         t.Open,
 		}
 
-		nextRaw := int64(f.NextFundingTime)
-		if nextRaw <= 0 {
-			nextRaw = int64(f.FundingTime)
+		if len(t.Ask) > 0 {
+			row.Ask = t.Ask[0]
 		}
-		if nextRaw <= 0 {
-			nextRaw = int64(f.SettlementTime)
-		}
-
-		nextFunding := parseHTXFundingTime(nextRaw)
-		if nextFunding.IsZero() {
-			nextFunding = nextFundingByInterval(now, 8)
+		if len(t.Bid) > 0 {
+			row.Bid = t.Bid[0]
 		}
 
-		intervalHours := extractIntervalHours(
-			f.FundingIntervalHours,
-			f.FundingInterval,
-			f.FundingRateInterval,
-			f.Interval,
-		)
+		result[code] = row
+	}
 
-		if intervalHours <= 0 {
-			intervalHours = inferIntervalFromNextFunding(now, nextFunding)
-		}
-		if intervalHours <= 0 {
-			intervalHours = 8
-		}
+	return result
+}
 
-		out[f.ContractCode] = htxFundingInfo{
-			Rate:          rate,
-			NextFunding:   nextFunding,
-			IntervalHours: intervalHours,
-			OK:            true,
+func (c *Client) fetchFundingInfo(contractCode string, now time.Time) htxFundingInfo {
+	q := url.Values{}
+	q.Set("contract_code", contractCode)
+
+	var out struct {
+		Status string `json:"status"`
+		ErrMsg string `json:"err_msg"`
+		Data   []struct {
+			ContractCode        string        `json:"contract_code"`
+			FundingRate         flexibleFloat `json:"funding_rate"`
+			EstimatedRate       flexibleFloat `json:"estimated_rate"`
+			FundingTime         flexibleInt   `json:"funding_time"`
+			NextFundingTime     flexibleInt   `json:"next_funding_time"`
+			FundingInterval     flexibleFloat `json:"funding_interval"`
+			FundingRateInterval flexibleFloat `json:"funding_rate_interval"`
+		} `json:"data"`
+	}
+
+	if err := c.getJSON("/linear-swap-api/v1/swap_funding_rate", q, &out); err != nil {
+		return htxFundingInfo{
+			ContractCode:  contractCode,
+			NextFunding:   nextFundingByInterval(now, 8),
+			IntervalHours: 8,
+			OK:            false,
 		}
 	}
 
-	fmt.Printf("HTX funding info loaded: %d\n", len(out))
+	if out.Status != "" && out.Status != "ok" {
+		return htxFundingInfo{
+			ContractCode:  contractCode,
+			NextFunding:   nextFundingByInterval(now, 8),
+			IntervalHours: 8,
+			OK:            false,
+		}
+	}
 
-	return out
+	if len(out.Data) == 0 {
+		return htxFundingInfo{
+			ContractCode:  contractCode,
+			NextFunding:   nextFundingByInterval(now, 8),
+			IntervalHours: 8,
+			OK:            false,
+		}
+	}
+
+	d := out.Data[0]
+
+	rate := firstNonZero(float64(d.FundingRate), float64(d.EstimatedRate))
+
+	nextFunding := parseMillisOrSeconds(int64(d.NextFundingTime))
+	if nextFunding.IsZero() {
+		nextFunding = parseMillisOrSeconds(int64(d.FundingTime))
+	}
+
+	intervalHours := extractIntervalHours(d.FundingInterval, d.FundingRateInterval)
+	if intervalHours <= 0 {
+		intervalHours = inferIntervalFromNextFunding(now, nextFunding)
+	}
+	if intervalHours <= 0 {
+		intervalHours = 8
+	}
+
+	if nextFunding.IsZero() {
+		nextFunding = nextFundingByInterval(now, int(intervalHours))
+	}
+
+	return htxFundingInfo{
+		ContractCode:  contractCode,
+		Rate:          rate,
+		NextFunding:   nextFunding,
+		IntervalHours: intervalHours,
+		OK:            true,
+	}
 }
 
-func parseHTXFundingTime(v int64) time.Time {
+func (c *Client) SymbolRules(symbol string) (domain.SymbolRules, error) {
+	contractCode := normalizeHTXContract(symbol)
+
+	contracts, err := c.contracts()
+	if err != nil {
+		return domain.SymbolRules{}, err
+	}
+
+	for _, ct := range contracts {
+		code := normalizeHTXContract(firstNonEmpty(ct.ContractCode, ct.Symbol))
+		if code != contractCode {
+			continue
+		}
+
+		base, quote := splitHTXContract(code)
+
+		tickSize := float64(ct.PriceTick)
+
+		return domain.SymbolRules{
+			Exchange:                    c.Name(),
+			Symbol:                      htxUnifiedSymbol(code),
+			NativeSymbol:                code,
+			SupportsNotionalMarketOrder: false,
+			MinQty:                      1,
+			MaxQty:                      0,
+			QtyStep:                     1,
+			MinNotional:                 float64(ct.MinOrderValue),
+			PriceStep:                   tickSize,
+			TickSize:                    tickSize,
+			ContractSize:                firstNonZero(float64(ct.ContractSize), 1),
+			BaseAsset:                   base,
+			QuoteAsset:                  quote,
+			MarginAsset:                 "USDT",
+			UpdatedAt:                   time.Now().UTC(),
+		}, nil
+	}
+
+	return domain.SymbolRules{}, fmt.Errorf("HTX symbol rules not found: %s", contractCode)
+}
+
+func (c *Client) SetMarginAndLeverage(symbol string, leverage int, marginMode string) error {
+	contractCode := normalizeHTXContract(symbol)
+
+	if leverage <= 0 {
+		leverage = 1
+	}
+
+	body := map[string]any{
+		"contract_code": contractCode,
+		"lever_rate":    leverage,
+	}
+
+	var out htxResponse[any]
+	if err := c.signedPOST("/linear-swap-api/v1/swap_switch_lever_rate", body, &out); err != nil {
+		return err
+	}
+
+	if out.Status != "" && out.Status != "ok" && !isIgnorableHTXMsg(firstNonEmpty(out.ErrMsg, out.Message)) {
+		return fmt.Errorf("HTX set leverage status=%s err=%s", out.Status, firstNonEmpty(out.ErrMsg, out.Message))
+	}
+
+	return nil
+}
+
+func (c *Client) PlaceOrder(req domain.OrderRequest) (domain.OrderResult, error) {
+	if strings.EqualFold(req.Type, string(domain.OrderTypeMarket)) &&
+		strings.EqualFold(req.Side, string(domain.OrderSideSell)) &&
+		!req.ReduceOnly {
+		return c.PlaceMarketShort(req)
+	}
+
+	if strings.EqualFold(req.Type, string(domain.OrderTypeLimit)) {
+		return c.PlaceLimitReduceOnly(req)
+	}
+
+	return domain.OrderResult{}, fmt.Errorf("HTX unsupported order request: type=%s side=%s reduce_only=%v", req.Type, req.Side, req.ReduceOnly)
+}
+
+func (c *Client) PlaceMarketShort(req domain.OrderRequest) (domain.OrderResult, error) {
+	contractCode := normalizeHTXContract(firstNonEmpty(req.NativeSymbol, req.Symbol))
+
+	rules, err := c.SymbolRules(contractCode)
+	if err != nil {
+		return domain.OrderResult{}, err
+	}
+
+	price := req.Price
+	if price <= 0 {
+		price = c.markPrice(contractCode)
+	}
+	if price <= 0 {
+		return domain.OrderResult{}, fmt.Errorf("HTX %s mark price is zero", contractCode)
+	}
+
+	contractsQty := req.Qty
+	if contractsQty <= 0 {
+		notional := firstNonZero(req.NotionalUSDT, req.MarginUSDT)
+		contractsQty = notional / price / firstNonZero(rules.ContractSize, 1)
+	}
+
+	contractsQty = floorToStep(contractsQty, rules.QtyStep)
+	if contractsQty <= 0 {
+		return domain.OrderResult{}, fmt.Errorf("HTX %s calculated contracts qty is zero", contractCode)
+	}
+
+	if rules.MinQty > 0 && contractsQty < rules.MinQty {
+		return domain.OrderResult{}, fmt.Errorf("HTX %s qty %.12f < min qty %.12f", contractCode, contractsQty, rules.MinQty)
+	}
+
+	clientOID := htxClientOID(req.ClientOrderID)
+
+	body := map[string]any{
+		"contract_code":    contractCode,
+		"volume":           int64(math.Abs(contractsQty)),
+		"direction":        "sell",
+		"offset":           "open",
+		"lever_rate":       firstNonZeroInt(req.Leverage, 1),
+		"order_price_type": "opponent",
+		"client_order_id":  clientOID,
+	}
+
+	var out htxResponse[htxOrderSubmitData]
+	if err := c.signedPOST("/linear-swap-api/v1/swap_order", body, &out); err != nil {
+		return domain.OrderResult{}, err
+	}
+
+	if out.Status != "" && out.Status != "ok" {
+		return domain.OrderResult{}, fmt.Errorf("HTX market short status=%s err=%s", out.Status, firstNonEmpty(out.ErrMsg, out.Message))
+	}
+
+	orderID := firstNonEmpty(out.Data.OrderIDStr, strconv.FormatInt(int64(out.Data.OrderID), 10))
+
+	res := domain.OrderResult{
+		Exchange:        c.Name(),
+		ExchangeOrderID: orderID,
+		ClientOrderID:   strconv.FormatInt(clientOID, 10),
+		Symbol:          htxUnifiedSymbol(contractCode),
+		NativeSymbol:    contractCode,
+		Side:            "SELL",
+		Type:            string(domain.OrderTypeMarket),
+		Status:          "submitted",
+		OrderStatus:     domain.OrderStatusNew,
+		Price:           price,
+		Qty:             math.Abs(contractsQty),
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+
+	if orderID != "" {
+		if fresh, err := c.GetOrderStatus(contractCode, orderID); err == nil {
+			res = fresh
+		}
+	}
+
+	return res, nil
+}
+
+func (c *Client) PlaceLimitReduceOnly(req domain.OrderRequest) (domain.OrderResult, error) {
+	contractCode := normalizeHTXContract(firstNonEmpty(req.NativeSymbol, req.Symbol))
+
+	rules, err := c.SymbolRules(contractCode)
+	if err != nil {
+		return domain.OrderResult{}, err
+	}
+
+	price := req.Price
+	if price <= 0 {
+		return domain.OrderResult{}, fmt.Errorf("HTX %s limit price is zero", contractCode)
+	}
+
+	price = floorToStep(price, rules.TickSize)
+
+	contractsQty := req.Qty
+	if contractsQty <= 0 {
+		ref := c.markPrice(contractCode)
+		if ref <= 0 {
+			ref = price
+		}
+
+		notional := firstNonZero(req.NotionalUSDT, req.MarginUSDT)
+		contractsQty = notional / ref / firstNonZero(rules.ContractSize, 1)
+	}
+
+	contractsQty = floorToStep(contractsQty, rules.QtyStep)
+	if contractsQty <= 0 {
+		return domain.OrderResult{}, fmt.Errorf("HTX %s calculated contracts qty is zero", contractCode)
+	}
+
+	if rules.MinQty > 0 && contractsQty < rules.MinQty {
+		return domain.OrderResult{}, fmt.Errorf("HTX %s qty %.12f < min qty %.12f", contractCode, contractsQty, rules.MinQty)
+	}
+
+	direction := "buy"
+	offset := "close"
+
+	if strings.EqualFold(req.Side, string(domain.OrderSideSell)) || strings.EqualFold(req.Side, "sell") {
+		direction = "sell"
+		offset = "close"
+	}
+
+	if !req.ReduceOnly {
+		if direction == "buy" {
+			offset = "open"
+		} else {
+			offset = "open"
+		}
+	}
+
+	clientOID := htxClientOID(req.ClientOrderID)
+
+	body := map[string]any{
+		"contract_code":    contractCode,
+		"volume":           int64(math.Abs(contractsQty)),
+		"direction":        direction,
+		"offset":           offset,
+		"lever_rate":       firstNonZeroInt(req.Leverage, 1),
+		"price":            formatFloat(price),
+		"order_price_type": "limit",
+		"client_order_id":  clientOID,
+	}
+
+	var out htxResponse[htxOrderSubmitData]
+	if err := c.signedPOST("/linear-swap-api/v1/swap_order", body, &out); err != nil {
+		return domain.OrderResult{}, err
+	}
+
+	if out.Status != "" && out.Status != "ok" {
+		return domain.OrderResult{}, fmt.Errorf("HTX limit order status=%s err=%s", out.Status, firstNonEmpty(out.ErrMsg, out.Message))
+	}
+
+	orderID := firstNonEmpty(out.Data.OrderIDStr, strconv.FormatInt(int64(out.Data.OrderID), 10))
+
+	return domain.OrderResult{
+		Exchange:        c.Name(),
+		ExchangeOrderID: orderID,
+		ClientOrderID:   strconv.FormatInt(clientOID, 10),
+		Symbol:          htxUnifiedSymbol(contractCode),
+		NativeSymbol:    contractCode,
+		Side:            strings.ToUpper(req.Side),
+		Type:            string(domain.OrderTypeLimit),
+		Status:          "submitted",
+		OrderStatus:     domain.OrderStatusNew,
+		Price:           price,
+		Qty:             math.Abs(contractsQty),
+		ReduceOnly:      req.ReduceOnly,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}, nil
+}
+
+func (c *Client) GetOrderStatus(symbol, orderID string) (domain.OrderResult, error) {
+	contractCode := normalizeHTXContract(symbol)
+
+	body := map[string]any{
+		"contract_code": contractCode,
+	}
+
+	if isNumeric(orderID) {
+		body["order_id"] = orderID
+	} else {
+		body["client_order_id"] = orderID
+	}
+
+	var out htxResponse[[]htxOrderData]
+	if err := c.signedPOST("/linear-swap-api/v1/swap_order_info", body, &out); err != nil {
+		return domain.OrderResult{}, err
+	}
+
+	if out.Status != "" && out.Status != "ok" {
+		return domain.OrderResult{}, fmt.Errorf("HTX order info status=%s err=%s", out.Status, firstNonEmpty(out.ErrMsg, out.Message))
+	}
+
+	if len(out.Data) == 0 {
+		return domain.OrderResult{}, fmt.Errorf("HTX order info empty: %s %s", contractCode, orderID)
+	}
+
+	rules, _ := c.SymbolRules(contractCode)
+
+	return out.Data[0].toDomain(c.Name(), contractCode, rules.ContractSize), nil
+}
+
+func (c *Client) CancelOrder(symbol, orderID string) error {
+	contractCode := normalizeHTXContract(symbol)
+
+	body := map[string]any{
+		"contract_code": contractCode,
+		"order_id":      orderID,
+	}
+
+	var out htxResponse[any]
+	if err := c.signedPOST("/linear-swap-api/v1/swap_cancel", body, &out); err != nil {
+		return err
+	}
+
+	if out.Status != "" && out.Status != "ok" && !isIgnorableCancel(firstNonEmpty(out.ErrMsg, out.Message)) {
+		return fmt.Errorf("HTX cancel order status=%s err=%s", out.Status, firstNonEmpty(out.ErrMsg, out.Message))
+	}
+
+	return nil
+}
+
+func (c *Client) CancelAll(symbol string) error {
+	contractCode := normalizeHTXContract(symbol)
+
+	body := map[string]any{
+		"contract_code": contractCode,
+	}
+
+	var out htxResponse[any]
+	if err := c.signedPOST("/linear-swap-api/v1/swap_cancelall", body, &out); err != nil {
+		return err
+	}
+
+	if out.Status != "" && out.Status != "ok" && !isIgnorableCancel(firstNonEmpty(out.ErrMsg, out.Message)) {
+		return fmt.Errorf("HTX cancel all status=%s err=%s", out.Status, firstNonEmpty(out.ErrMsg, out.Message))
+	}
+
+	return nil
+}
+
+func (c *Client) ClosePositionMarket(symbol string) error {
+	contractCode := normalizeHTXContract(symbol)
+
+	pos, err := c.GetPosition(contractCode)
+	if err != nil {
+		return err
+	}
+
+	if pos.Qty <= 0 {
+		return nil
+	}
+
+	direction := "buy"
+	if pos.Side == domain.SideLong {
+		direction = "sell"
+	}
+
+	body := map[string]any{
+		"contract_code":    contractCode,
+		"volume":           int64(math.Abs(pos.Qty)),
+		"direction":        direction,
+		"offset":           "close",
+		"lever_rate":       firstNonZeroInt(pos.Leverage, 1),
+		"order_price_type": "opponent",
+		"client_order_id":  htxClientOID("close-" + contractCode + "-" + strconv.FormatInt(time.Now().UnixMilli(), 10)),
+	}
+
+	var out htxResponse[htxOrderSubmitData]
+	if err := c.signedPOST("/linear-swap-api/v1/swap_order", body, &out); err != nil {
+		return err
+	}
+
+	if out.Status != "" && out.Status != "ok" {
+		return fmt.Errorf("HTX close market status=%s err=%s", out.Status, firstNonEmpty(out.ErrMsg, out.Message))
+	}
+
+	return nil
+}
+
+func (c *Client) GetPosition(symbol string) (domain.PositionInfo, error) {
+	contractCode := normalizeHTXContract(symbol)
+
+	body := map[string]any{
+		"contract_code": contractCode,
+	}
+
+	var out htxResponse[[]htxPositionData]
+	if err := c.signedPOST("/linear-swap-api/v1/swap_position_info", body, &out); err != nil {
+		return domain.PositionInfo{}, err
+	}
+
+	if out.Status != "" && out.Status != "ok" {
+		if isIgnorableHTXMsg(firstNonEmpty(out.ErrMsg, out.Message)) {
+			return domain.PositionInfo{
+				Exchange:     c.Name(),
+				Symbol:       htxUnifiedSymbol(contractCode),
+				NativeSymbol: contractCode,
+				UpdatedAt:    time.Now().UTC(),
+			}, nil
+		}
+
+		return domain.PositionInfo{}, fmt.Errorf("HTX position status=%s err=%s", out.Status, firstNonEmpty(out.ErrMsg, out.Message))
+	}
+
+	for _, p := range out.Data {
+		if normalizeHTXContract(p.ContractCode) != contractCode {
+			continue
+		}
+
+		qty := math.Abs(float64(p.Volume))
+		if qty <= 0 {
+			continue
+		}
+
+		side := domain.SideShort
+		if strings.EqualFold(p.Direction, "buy") {
+			side = domain.SideLong
+		}
+
+		return domain.PositionInfo{
+			Exchange:         c.Name(),
+			Symbol:           htxUnifiedSymbol(contractCode),
+			NativeSymbol:     contractCode,
+			Side:             side,
+			Qty:              qty,
+			NotionalUSDT:     math.Abs(float64(p.PositionValue)),
+			EntryPrice:       float64(p.CostOpen),
+			MarkPrice:        float64(p.LastPrice),
+			UnrealizedPNL:    float64(p.ProfitUnreal),
+			RealizedPNL:      float64(p.Profit),
+			LiquidationPrice: float64(p.LiquidationPrice),
+			Leverage:         int(float64(p.LeverRate)),
+			MarginMode:       "isolated",
+			UpdatedAt:        time.Now().UTC(),
+		}, nil
+	}
+
+	return domain.PositionInfo{
+		Exchange:     c.Name(),
+		Symbol:       htxUnifiedSymbol(contractCode),
+		NativeSymbol: contractCode,
+		UpdatedAt:    time.Now().UTC(),
+	}, nil
+}
+
+func (c *Client) GetUnrealizedPNL(symbol string) (domain.UnrealizedPNLInfo, error) {
+	pos, err := c.GetPosition(symbol)
+	if err != nil {
+		return domain.UnrealizedPNLInfo{}, err
+	}
+
+	return domain.UnrealizedPNLInfo{
+		Exchange:      c.Name(),
+		Symbol:        pos.Symbol,
+		NativeSymbol:  pos.NativeSymbol,
+		Side:          pos.Side,
+		Qty:           pos.Qty,
+		EntryPrice:    pos.EntryPrice,
+		MarkPrice:     pos.MarkPrice,
+		UnrealizedPNL: pos.UnrealizedPNL,
+		UpdatedAt:     time.Now().UTC(),
+	}, nil
+}
+
+func (c *Client) FundingFees(symbol string, from, to time.Time) ([]domain.FundingFeeInfo, error) {
+	return nil, nil
+}
+
+type htxResponse[T any] struct {
+	Status  string      `json:"status"`
+	ErrMsg  string      `json:"err_msg"`
+	Message string      `json:"message"`
+	TS      flexibleInt `json:"ts"`
+	Data    T           `json:"data"`
+}
+
+type htxOrderSubmitData struct {
+	OrderID       flexibleInt `json:"order_id"`
+	OrderIDStr    string      `json:"order_id_str"`
+	ClientOrderID flexibleInt `json:"client_order_id"`
+}
+
+type htxOrderData struct {
+	OrderID        flexibleInt   `json:"order_id"`
+	OrderIDStr     string        `json:"order_id_str"`
+	ClientOrderID  flexibleInt   `json:"client_order_id"`
+	ContractCode   string        `json:"contract_code"`
+	Symbol         string        `json:"symbol"`
+	Volume         flexibleFloat `json:"volume"`
+	Price          flexibleFloat `json:"price"`
+	OrderPriceType string        `json:"order_price_type"`
+	Direction      string        `json:"direction"`
+	Offset         string        `json:"offset"`
+	LeverRate      flexibleFloat `json:"lever_rate"`
+	OrderStatus    flexibleInt   `json:"order_status"`
+	TradeVolume    flexibleFloat `json:"trade_volume"`
+	TradeTurnover  flexibleFloat `json:"trade_turnover"`
+	Fee            flexibleFloat `json:"fee"`
+	FeeAsset       string        `json:"fee_asset"`
+	CreatedAt      flexibleInt   `json:"created_at"`
+	CanceledAt     flexibleInt   `json:"canceled_at"`
+	UpdateTime     flexibleInt   `json:"update_time"`
+}
+
+func (o htxOrderData) toDomain(exchange domain.ExchangeName, fallbackContract string, contractSize float64) domain.OrderResult {
+	contract := normalizeHTXContract(firstNonEmpty(o.ContractCode, fallbackContract))
+
+	qty := float64(o.Volume)
+	filled := float64(o.TradeVolume)
+
+	createdAt := time.Now().UTC()
+	if o.CreatedAt > 0 {
+		createdAt = parseMillisOrSeconds(int64(o.CreatedAt))
+	}
+
+	updatedAt := time.Now().UTC()
+	if o.UpdateTime > 0 {
+		updatedAt = parseMillisOrSeconds(int64(o.UpdateTime))
+	} else if o.CanceledAt > 0 {
+		updatedAt = parseMillisOrSeconds(int64(o.CanceledAt))
+	}
+
+	orderID := firstNonEmpty(o.OrderIDStr, strconv.FormatInt(int64(o.OrderID), 10))
+
+	avgPrice := 0.0
+	if filled > 0 && o.TradeTurnover > 0 {
+		avgPrice = float64(o.TradeTurnover) / filled / firstNonZero(contractSize, 1)
+	}
+
+	return domain.OrderResult{
+		Exchange:        exchange,
+		ExchangeOrderID: orderID,
+		ClientOrderID:   strconv.FormatInt(int64(o.ClientOrderID), 10),
+		Symbol:          htxUnifiedSymbol(contract),
+		NativeSymbol:    contract,
+		Side:            strings.ToUpper(o.Direction),
+		PositionSide:    strings.ToUpper(o.Offset),
+		Type:            htxOrderType(o.OrderPriceType),
+		Status:          strconv.Itoa(int(o.OrderStatus)),
+		OrderStatus:     mapHTXOrderStatus(int(o.OrderStatus), qty, filled),
+		Price:           float64(o.Price),
+		AvgPrice:        avgPrice,
+		Qty:             qty,
+		FilledQty:       filled,
+		FilledNotional:  float64(o.TradeTurnover),
+		RemainingQty:    math.Max(0, qty-filled),
+		Fee:             float64(o.Fee),
+		FeeAsset:        firstNonEmpty(o.FeeAsset, "USDT"),
+		ReduceOnly:      strings.EqualFold(o.Offset, "close"),
+		CreatedAt:       createdAt,
+		UpdatedAt:       updatedAt,
+	}
+}
+
+type htxPositionData struct {
+	Symbol           string        `json:"symbol"`
+	ContractCode     string        `json:"contract_code"`
+	Direction        string        `json:"direction"`
+	Volume           flexibleFloat `json:"volume"`
+	Available        flexibleFloat `json:"available"`
+	Frozen           flexibleFloat `json:"frozen"`
+	CostOpen         flexibleFloat `json:"cost_open"`
+	CostHold         flexibleFloat `json:"cost_hold"`
+	ProfitUnreal     flexibleFloat `json:"profit_unreal"`
+	Profit           flexibleFloat `json:"profit"`
+	PositionMargin   flexibleFloat `json:"position_margin"`
+	LeverRate        flexibleFloat `json:"lever_rate"`
+	LastPrice        flexibleFloat `json:"last_price"`
+	PositionValue    flexibleFloat `json:"position_value"`
+	LiquidationPrice flexibleFloat `json:"liquidation_price"`
+	MarginAsset      string        `json:"margin_asset"`
+}
+
+func (c *Client) markPrice(symbol string) float64 {
+	contractCode := normalizeHTXContract(symbol)
+
+	q := url.Values{}
+	q.Set("contract_code", contractCode)
+
+	var out struct {
+		Status string `json:"status"`
+		ErrMsg string `json:"err_msg"`
+		Tick   struct {
+			ContractCode string        `json:"contract_code"`
+			Close        flexibleFloat `json:"close"`
+			MarkPrice    flexibleFloat `json:"mark_price"`
+			IndexPrice   flexibleFloat `json:"index_price"`
+		} `json:"tick"`
+	}
+
+	if err := c.getJSON("/linear-swap-ex/market/detail/merged", q, &out); err != nil {
+		return 0
+	}
+
+	if out.Status != "" && out.Status != "ok" {
+		return 0
+	}
+
+	return firstNonZero(float64(out.Tick.MarkPrice), float64(out.Tick.IndexPrice), float64(out.Tick.Close))
+}
+
+func (c *Client) getJSON(path string, q url.Values, dst any) error {
+	u := c.baseURL + path
+	if q != nil && len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 funding-bot/1.0")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("HTX GET %s: status=%d body=%s", path, resp.StatusCode, string(body))
+	}
+
+	if dst == nil {
+		return nil
+	}
+
+	if err := json.Unmarshal(body, dst); err != nil {
+		return fmt.Errorf("HTX GET %s decode error: %w; body=%s", path, err, string(body))
+	}
+
+	return nil
+}
+
+func (c *Client) signedPOST(path string, body any, dst any) error {
+	return c.signedRequest(http.MethodPost, path, nil, body, dst)
+}
+
+func (c *Client) signedRequest(method, path string, q url.Values, body any, dst any) error {
+	if c.apiKey == "" || c.apiSecret == "" {
+		return fmt.Errorf("HTX API key or secret is empty")
+	}
+
+	if q == nil {
+		q = url.Values{}
+	}
+
+	base, err := url.Parse(c.baseURL)
+	if err != nil {
+		return err
+	}
+
+	q.Set("AccessKeyId", c.apiKey)
+	q.Set("SignatureMethod", "HmacSHA256")
+	q.Set("SignatureVersion", "2")
+	q.Set("Timestamp", time.Now().UTC().Format("2006-01-02T15:04:05"))
+
+	canonicalQuery := q.Encode()
+
+	payload := strings.Join([]string{
+		method,
+		base.Host,
+		path,
+		canonicalQuery,
+	}, "\n")
+
+	signature := c.sign(payload)
+	q.Set("Signature", signature)
+
+	requestPath := path + "?" + q.Encode()
+	u := c.baseURL + requestPath
+
+	bodyBytes := []byte{}
+	if body != nil {
+		bodyBytes, err = json.Marshal(body)
+		if err != nil {
+			return err
+		}
+	}
+
+	var reader io.Reader
+	if len(bodyBytes) > 0 {
+		reader = bytes.NewReader(bodyBytes)
+	}
+
+	req, err := http.NewRequest(method, u, reader)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 funding-bot/1.0")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("HTX signed %s %s: status=%d body=%s", method, path, resp.StatusCode, string(raw))
+	}
+
+	if dst == nil {
+		return nil
+	}
+
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return fmt.Errorf("HTX signed %s %s decode error: %w; body=%s", method, path, err, string(raw))
+	}
+
+	return nil
+}
+
+func (c *Client) sign(payload string) string {
+	mac := hmac.New(sha256.New, []byte(c.apiSecret))
+	mac.Write([]byte(payload))
+
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+type flexibleFloat float64
+
+func (f *flexibleFloat) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		*f = 0
+		return nil
+	}
+
+	var num float64
+	if err := json.Unmarshal(b, &num); err == nil {
+		*f = flexibleFloat(num)
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+
+	if s == "" {
+		*f = 0
+		return nil
+	}
+
+	v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", ""), 64)
+	if err != nil {
+		*f = 0
+		return nil
+	}
+
+	*f = flexibleFloat(v)
+
+	return nil
+}
+
+type flexibleInt int64
+
+func (i *flexibleInt) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		*i = 0
+		return nil
+	}
+
+	var num int64
+	if err := json.Unmarshal(b, &num); err == nil {
+		*i = flexibleInt(num)
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+
+	if s == "" {
+		*i = 0
+		return nil
+	}
+
+	v, err := strconv.ParseInt(strings.ReplaceAll(s, ",", ""), 10, 64)
+	if err != nil {
+		*i = 0
+		return nil
+	}
+
+	*i = flexibleInt(v)
+
+	return nil
+}
+
+func normalizeHTXContract(symbol string) string {
+	s := strings.ToUpper(strings.TrimSpace(symbol))
+
+	if strings.Contains(s, "-") {
+		return s
+	}
+
+	if strings.HasSuffix(s, "USDT") {
+		return strings.TrimSuffix(s, "USDT") + "-USDT"
+	}
+
+	return s
+}
+
+func htxUnifiedSymbol(contractCode string) string {
+	return strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(contractCode)), "-", "")
+}
+
+func splitHTXContract(contractCode string) (string, string) {
+	parts := strings.Split(strings.ToUpper(strings.TrimSpace(contractCode)), "-")
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+
+	if strings.HasSuffix(contractCode, "USDT") {
+		return strings.TrimSuffix(contractCode, "USDT"), "USDT"
+	}
+
+	return "", "USDT"
+}
+
+func parseMillisOrSeconds(v int64) time.Time {
 	if v <= 0 {
 		return time.Time{}
 	}
 
-	// Unix milliseconds.
 	if v > 1_000_000_000_000 {
 		return time.UnixMilli(v).UTC()
 	}
 
-	// Unix seconds.
 	if v > 1_000_000_000 {
 		return time.Unix(v, 0).UTC()
 	}
@@ -518,6 +1291,7 @@ func parseHTXFundingTime(v int64) time.Time {
 func extractIntervalHours(values ...flexibleFloat) float64 {
 	for _, raw := range values {
 		v := float64(raw)
+
 		if v <= 0 {
 			continue
 		}
@@ -571,6 +1345,8 @@ func nextFundingByInterval(now time.Time, hours int) time.Time {
 		hours = 8
 	}
 
+	now = now.UTC()
+
 	base := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	step := time.Duration(hours) * time.Hour
 
@@ -581,192 +1357,143 @@ func nextFundingByInterval(now time.Time, hours int) time.Time {
 	}
 }
 
-func (c *Client) SetMarginAndLeverage(symbol string, leverage int, marginMode string) error {
-	return nil
+func floorToStep(v, step float64) float64 {
+	if v <= 0 {
+		return 0
+	}
+
+	if step <= 0 {
+		return v
+	}
+
+	return math.Floor(v/step) * step
 }
 
-func (c *Client) PlaceOrder(req domain.OrderRequest) (domain.OrderResult, error) {
-	if c.apiKey == "" || c.apiSecret == "" {
-		return domain.OrderResult{}, fmt.Errorf("htx api keys are empty")
-	}
-
-	return domain.OrderResult{}, fmt.Errorf("live HTX order placement is scaffolded; enable after validation")
+func formatFloat(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
-func (c *Client) CancelOrder(symbol, orderID string) error {
-	return nil
-}
-
-func (c *Client) CancelAll(symbol string) error {
-	return nil
-}
-
-func (c *Client) ClosePositionMarket(symbol string) error {
-	return nil
-}
-
-func (c *Client) getJSON(pathWithQuery string, dst any) error {
-	u := c.baseURL + pathWithQuery
-
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 funding-bot/1.0")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("htx GET %s: %s", pathWithQuery, string(body))
-	}
-
-	if err := json.Unmarshal(body, dst); err != nil {
-		return fmt.Errorf("htx GET %s decode error: %w; body=%s", pathWithQuery, err, string(body))
-	}
-
-	return nil
-}
-
-func (c *Client) signedPOSTRaw(path string, body any) ([]byte, error) {
-	if c.apiKey == "" || c.apiSecret == "" {
-		return nil, fmt.Errorf("htx api key or secret is empty")
-	}
-
-	bodyBytes, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(bodyBytes) == 0 || string(bodyBytes) == "null" {
-		bodyBytes = []byte("{}")
-	}
-
-	parsedBase, err := url.Parse(c.baseURL)
-	if err != nil {
-		return nil, err
-	}
-
-	authParams := url.Values{}
-	authParams.Set("AccessKeyId", c.apiKey)
-	authParams.Set("SignatureMethod", "HmacSHA256")
-	authParams.Set("SignatureVersion", "2")
-	authParams.Set("Timestamp", time.Now().UTC().Format("2006-01-02T15:04:05"))
-
-	signature := c.signHTX(http.MethodPost, parsedBase.Host, path, authParams)
-	authParams.Set("Signature", signature)
-
-	u := c.baseURL + path + "?" + authParams.Encode()
-
-	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 funding-bot/1.0")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	raw, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("htx signed POST %s: %s", path, string(raw))
-	}
-
-	return raw, nil
-}
-
-func (c *Client) signHTX(method, host, path string, params url.Values) string {
-	payload := strings.Join([]string{
-		method,
-		host,
-		path,
-		params.Encode(),
-	}, "\n")
-
-	mac := hmac.New(sha256.New, []byte(c.apiSecret))
-	mac.Write([]byte(payload))
-
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
-}
-
-type flexibleFloat float64
-
-func (f *flexibleFloat) UnmarshalJSON(b []byte) error {
-	if len(b) == 0 || string(b) == "null" {
-		*f = 0
-		return nil
-	}
-
-	var num float64
-	if err := json.Unmarshal(b, &num); err == nil {
-		*f = flexibleFloat(num)
-		return nil
-	}
-
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
-	}
-
+func htxClientOID(s string) int64 {
+	s = strings.TrimSpace(s)
 	if s == "" {
-		*f = 0
-		return nil
+		return time.Now().UnixMilli()
 	}
 
-	v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", ""), 64)
-	if err != nil {
-		*f = 0
-		return nil
+	var digits strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
 	}
 
-	*f = flexibleFloat(v)
-	return nil
+	out := digits.String()
+	if out == "" {
+		return time.Now().UnixMilli()
+	}
+
+	if len(out) > 18 {
+		out = out[len(out)-18:]
+	}
+
+	v, err := strconv.ParseInt(out, 10, 64)
+	if err != nil || v <= 0 {
+		return time.Now().UnixMilli()
+	}
+
+	return v
 }
 
-type flexibleInt int64
-
-func (i *flexibleInt) UnmarshalJSON(b []byte) error {
-	if len(b) == 0 || string(b) == "null" {
-		*i = 0
-		return nil
+func htxOrderType(orderPriceType string) string {
+	orderPriceType = strings.ToLower(strings.TrimSpace(orderPriceType))
+	if strings.Contains(orderPriceType, "opponent") || strings.Contains(orderPriceType, "market") {
+		return string(domain.OrderTypeMarket)
 	}
 
-	var num int64
-	if err := json.Unmarshal(b, &num); err == nil {
-		*i = flexibleInt(num)
-		return nil
-	}
+	return string(domain.OrderTypeLimit)
+}
 
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
-	}
+func mapHTXOrderStatus(status int, qty float64, filled float64) domain.OrderStatus {
+	switch status {
+	case 1, 2, 3:
+		if filled > 0 && filled < qty {
+			return domain.OrderStatusPartiallyFill
+		}
 
+		return domain.OrderStatusNew
+	case 4:
+		return domain.OrderStatusFilled
+	case 5, 6, 7:
+		if filled > 0 && filled < qty {
+			return domain.OrderStatusPartiallyFill
+		}
+
+		return domain.OrderStatusCanceled
+	default:
+		return domain.OrderStatusUnknown
+	}
+}
+
+func isNumeric(s string) bool {
 	if s == "" {
-		*i = 0
-		return nil
+		return false
 	}
 
-	v, err := strconv.ParseInt(strings.ReplaceAll(s, ",", ""), 10, 64)
-	if err != nil {
-		*i = 0
-		return nil
+	_, err := strconv.ParseInt(s, 10, 64)
+
+	return err == nil
+}
+
+func firstNonZeroInt(values ...int) int {
+	for _, v := range values {
+		if v != 0 {
+			return v
+		}
 	}
 
-	*i = flexibleInt(v)
-	return nil
+	return 0
+}
+
+func isIgnorableHTXMsg(msg string) bool {
+	msg = strings.ToLower(msg)
+
+	return strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "not exist") ||
+		strings.Contains(msg, "no need") ||
+		strings.Contains(msg, "same") ||
+		strings.Contains(msg, "already") ||
+		strings.Contains(msg, "finished") ||
+		strings.Contains(msg, "cancelled") ||
+		strings.Contains(msg, "canceled")
+}
+
+func isIgnorableCancel(msg string) bool {
+	msg = strings.ToLower(msg)
+
+	return strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "not exist") ||
+		strings.Contains(msg, "already") ||
+		strings.Contains(msg, "finished") ||
+		strings.Contains(msg, "canceled") ||
+		strings.Contains(msg, "cancelled")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			return v
+		}
+	}
+
+	return ""
+}
+
+func firstNonZero(values ...float64) float64 {
+	for _, v := range values {
+		if v != 0 {
+			return v
+		}
+	}
+
+	return 0
 }

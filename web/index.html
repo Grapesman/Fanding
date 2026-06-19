@@ -33,9 +33,7 @@
             --shadow: 0 20px 70px rgba(0,0,0,.45);
         }
 
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
         body {
             margin: 0;
@@ -44,11 +42,7 @@
             color: var(--text);
         }
 
-        button,
-        input,
-        select {
-            font: inherit;
-        }
+        button, input, select { font: inherit; }
 
         .top {
             position: sticky;
@@ -85,10 +79,7 @@
             flex: 0 0 auto;
         }
 
-        h1 {
-            font-size: 20px;
-            margin: 0;
-        }
+        h1 { font-size: 20px; margin: 0; }
 
         .subtitle {
             font-size: 13px;
@@ -162,14 +153,18 @@
             white-space: nowrap;
         }
 
-        .btn:hover {
-            border-color: rgba(0,122,255,.45);
-        }
+        .btn:hover { border-color: rgba(0,122,255,.45); }
 
         .btn.primary {
             background: var(--blue);
             color: #fff;
             border-color: var(--blue);
+        }
+
+        .btn.danger {
+            background: var(--red);
+            color: #fff;
+            border-color: var(--red);
         }
 
         .wrap {
@@ -187,27 +182,11 @@
         }
 
         @media (max-width: 1150px) {
-            .header {
-                grid-template-columns: 1fr;
-            }
-
-            .header-mode {
-                min-height: auto;
-            }
-
-            .header-mode .small {
-                text-align: left;
-                max-width: none;
-            }
-
-            .actions {
-                justify-content: flex-start;
-                flex-wrap: wrap;
-            }
-
-            .cards {
-                grid-template-columns: 1fr;
-            }
+            .header { grid-template-columns: 1fr; }
+            .header-mode { min-height: auto; }
+            .header-mode .small { text-align: left; max-width: none; }
+            .actions { justify-content: flex-start; flex-wrap: wrap; }
+            .cards { grid-template-columns: 1fr; }
         }
 
         .card {
@@ -250,9 +229,7 @@
         }
 
         @media (max-width: 1250px) {
-            .exchange-grid {
-                grid-template-columns: 1fr;
-            }
+            .exchange-grid { grid-template-columns: 1fr; }
         }
 
         .ex-mini {
@@ -291,13 +268,8 @@
             flex: 0 0 auto;
         }
 
-        .dot.ok {
-            background: var(--green);
-        }
-
-        .dot.no {
-            background: var(--red);
-        }
+        .dot.ok { background: var(--green); }
+        .dot.no { background: var(--red); }
 
         .status-pill {
             display: inline-flex;
@@ -413,9 +385,7 @@
             margin-top: 12px;
         }
 
-        .section.active {
-            display: block;
-        }
+        .section.active { display: block; }
 
         .toolbar {
             display: flex;
@@ -460,9 +430,7 @@
             font-weight: 800;
         }
 
-        .control input[type="search"] {
-            width: 180px;
-        }
+        .control input[type="search"] { width: 180px; }
 
         .tableWrap {
             background: var(--card);
@@ -480,8 +448,11 @@
             table-layout: fixed;
         }
 
-        th,
-        td {
+        .wide-table {
+            min-width: 1680px;
+        }
+
+        th, td {
             padding: 12px 12px;
             text-align: left;
             border-bottom: 1px solid var(--line);
@@ -512,13 +483,9 @@
         col.col-pass { width: 130px; }
         col.col-updated { width: 115px; }
 
-        tbody tr:hover {
-            background: var(--soft);
-        }
+        tbody tr:hover { background: var(--soft); }
 
-        .selected-row {
-            background: rgba(0,122,255,.08);
-        }
+        .selected-row { background: rgba(0,122,255,.08); }
 
         .sort {
             font-size: 10px;
@@ -549,6 +516,17 @@
             color: #b42318;
             background: rgba(255,59,48,.14);
             border: 1px solid rgba(255,59,48,.35);
+        }
+
+        .badge.warn {
+            color: #a05a00;
+            background: rgba(255,149,0,.16);
+            border: 1px solid rgba(255,149,0,.35);
+        }
+
+        .mono {
+            font-variant-numeric: tabular-nums;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
         }
 
         .editable-cell {
@@ -582,9 +560,7 @@
             text-align: center;
         }
 
-        .edit-btn:hover {
-            background: rgba(0,122,255,.20);
-        }
+        .edit-btn:hover { background: rgba(0,122,255,.20); }
 
         .empty {
             color: var(--muted);
@@ -592,8 +568,7 @@
             padding: 32px;
         }
 
-        .logbox,
-        pre {
+        .logbox, pre {
             white-space: pre-wrap;
             background: var(--card);
             border: 1px solid var(--line);
@@ -604,9 +579,7 @@
             overflow: auto;
         }
 
-        .muted {
-            color: var(--muted);
-        }
+        .muted { color: var(--muted); }
     </style>
 </head>
 
@@ -617,7 +590,7 @@
             <div class="logo"></div>
             <div>
                 <h1>Funding Bot</h1>
-                <div class="subtitle">Mainnet-only · hybrid REST + WebSocket-ready · positive funding</div>
+                <div class="subtitle">Mainnet-only · funding live-ready execution · 3 scenarios</div>
             </div>
         </div>
 
@@ -702,8 +675,14 @@
         return Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
     }
 
-    function money(n) {
-        return fmtNum(n, 2) + ' USDT';
+    function money(n, d = 2) {
+        if (n === undefined || n === null || Number.isNaN(Number(n))) return '—';
+        return Number(n).toFixed(d) + ' USDT';
+    }
+
+    function signedMoney(n, d = 4) {
+        n = Number(n || 0);
+        return (n >= 0 ? '+' : '') + n.toFixed(d) + ' USDT';
     }
 
     function pct2(x) {
@@ -728,10 +707,8 @@
     function fmtPriceFull(n) {
         n = Number(n || 0);
         if (!n) return '—';
-
         if (n >= 100) return n.toFixed(6);
         if (n >= 1) return n.toFixed(8);
-
         return n.toFixed(12).replace(/0+$/, '').replace(/\.$/, '');
     }
 
@@ -739,6 +716,25 @@
         return x
             ? '<span class="badge ok">YES</span>'
             : '<span class="badge no">NO</span>';
+    }
+
+    function statusBadge(s) {
+        const v = String(s || '—');
+        const low = v.toLowerCase();
+
+        if (low.includes('closed') || low.includes('finish')) return `<span class="badge ok">${escapeHtml(v)}</span>`;
+        if (low.includes('error') || low.includes('failed')) return `<span class="badge no">${escapeHtml(v)}</span>`;
+        if (low.includes('alert') || low.includes('stuck')) return `<span class="badge warn">${escapeHtml(v)}</span>`;
+
+        return `<span class="badge">${escapeHtml(v)}</span>`;
+    }
+
+    function scenarioBadge(s) {
+        const v = String(s || '—');
+        if (v.includes('1')) return `<span class="badge ok">${escapeHtml(v)}</span>`;
+        if (v.includes('2')) return `<span class="badge warn">${escapeHtml(v)}</span>`;
+        if (v.includes('3')) return `<span class="badge no">${escapeHtml(v)}</span>`;
+        return `<span class="badge">${escapeHtml(v)}</span>`;
     }
 
     function fundingDisplay(r) {
@@ -754,6 +750,17 @@
         return state?.exchanges || [];
     }
 
+    function symbolOf(r) {
+        return r.native_symbol || r.symbol || '—';
+    }
+
+    function utc3(t) {
+        if (!t) return '—';
+        const d = new Date(t);
+        if (Number.isNaN(d.getTime())) return '—';
+        return d.toLocaleString('ru-RU', { hour12: false }) + ' UTC+3';
+    }
+
     function buildShell() {
         const tabs = document.getElementById('tabs');
         const sections = document.getElementById('sections');
@@ -767,6 +774,7 @@
                 label: ex.name + ' Futures',
                 exchange: ex.name
             })),
+            { key: 'planned', label: 'Planned Trades' },
             { key: 'active', label: 'Active Trades' },
             { key: 'journal', label: 'Trade Journal' },
             { key: 'settings', label: 'Settings / Info' },
@@ -789,10 +797,12 @@
 
             if (e.exchange) {
                 sec.innerHTML = exchangeSectionHtml(e);
+            } else if (e.key === 'planned') {
+                sec.innerHTML = '<div class="toolbar"><h2>Planned Trades</h2></div><div class="tableWrap"><table class="wide-table" id="plannedTable"></table></div>';
             } else if (e.key === 'active') {
-                sec.innerHTML = '<div class="toolbar"><h2>Active Trades</h2></div><div class="tableWrap"><table id="activeTable"></table></div>';
+                sec.innerHTML = '<div class="toolbar"><h2>Active Trades</h2></div><div class="tableWrap"><table class="wide-table" id="activeTable"></table></div>';
             } else if (e.key === 'journal') {
-                sec.innerHTML = '<div class="toolbar"><h2>Trade Journal</h2></div><div class="tableWrap"><table id="journalTable"></table></div>';
+                sec.innerHTML = '<div class="toolbar"><h2>Trade Journal</h2></div><div class="tableWrap"><table class="wide-table" id="journalTable"></table></div>';
             } else if (e.key === 'settings') {
                 sec.innerHTML = '<div class="toolbar"><h2>Settings / Info</h2></div><pre id="settingsBox">Loading…</pre>';
             } else {
@@ -956,13 +966,7 @@
         }).join('') + '</tr></thead><tbody>';
 
         if (!data.length) {
-            html += `
-        <tr>
-          <td colspan="${baseCols.length}" class="empty">
-            No rows. Try lower MIN_FUNDING_RATE_PERCENT or switch filter to All.
-          </td>
-        </tr>
-      `;
+            html += `<tr><td colspan="${baseCols.length}" class="empty">No rows. Try lower MIN_FUNDING_RATE_PERCENT or switch filter to All.</td></tr>`;
         }
 
         data.forEach(r => {
@@ -1051,21 +1055,142 @@
         await load(false);
     }
 
-    function renderSimpleTable(id, rows, cols) {
-        const t = document.getElementById(id);
-        if (!t) return;
+    function renderPlannedTable() {
+        const rows = state?.planned || [];
+        const table = document.getElementById('plannedTable');
+        if (!table) return;
 
-        let html = '<thead><tr>' + cols.map(c => '<th>' + c[1] + '</th>').join('') + '</tr></thead><tbody>';
+        const cols = [
+            ['exchange', 'Exchange'],
+            ['symbol', 'Symbol'],
+            ['status', 'Status'],
+            ['funding_rate', 'Funding'],
+            ['funding_time', 'Funding Time'],
+            ['position_usdt', 'Size'],
+            ['fair_price', 'Fair Price'],
+            ['scenario_2_tp_price', 'S2 TP'],
+            ['scenario_3_buy_price', 'S3 Buy'],
+            ['scenario_3_sell_price', 'S3 Sell'],
+            ['estimated_qty', 'Est Qty'],
+            ['can_trade_live', 'Live OK'],
+            ['live_reject_reason', 'Reject Reason']
+        ];
 
-        if (!rows?.length) {
-            html += `<tr><td colspan="${cols.length}" class="empty">No rows</td></tr>`;
+        let html = '<thead><tr>' + cols.map(c => `<th>${c[1]}</th>`).join('') + '</tr></thead><tbody>';
+
+        if (!rows.length) {
+            html += `<tr><td colspan="${cols.length}" class="empty">No planned trades</td></tr>`;
         }
 
-        (rows || []).forEach(r => {
-            html += '<tr>' + cols.map(c => '<td>' + escapeHtml(r[c[0]] ?? '') + '</td>').join('') + '</tr>';
+        rows.forEach(r => {
+            html += '<tr>';
+            html += `<td>${escapeHtml(r.exchange)}</td>`;
+            html += `<td title="${escapeHtml(symbolOf(r))}">${escapeHtml(symbolOf(r))}</td>`;
+            html += `<td>${statusBadge(r.status)}</td>`;
+            html += `<td>${pct2(r.funding_rate)} / ${Number(r.funding_interval_hours || 8).toFixed(0)}h</td>`;
+            html += `<td>${utc3(r.funding_time)}</td>`;
+            html += `<td>${money(r.position_usdt)}</td>`;
+            html += `<td class="mono">${fmtPriceFull(r.fair_price)}</td>`;
+            html += `<td class="mono">${fmtPriceFull(r.scenario_2_tp_price)}</td>`;
+            html += `<td class="mono">${fmtPriceFull(r.scenario_3_buy_price)}</td>`;
+            html += `<td class="mono">${fmtPriceFull(r.scenario_3_sell_price)}</td>`;
+            html += `<td class="mono">${fmtNum(r.estimated_qty, 8)}</td>`;
+            html += `<td>${pass(r.can_trade_live)}</td>`;
+            html += `<td title="${escapeHtml(r.live_reject_reason || '')}">${escapeHtml(r.live_reject_reason || '')}</td>`;
+            html += '</tr>';
         });
 
-        t.innerHTML = html + '</tbody>';
+        html += '</tbody>';
+        table.innerHTML = html;
+    }
+
+    function renderActiveTable() {
+        const rows = state?.active || [];
+        const table = document.getElementById('activeTable');
+        if (!table) return;
+
+        const cols = [
+            'Exchange', 'Symbol', 'Scenario', 'Status', 'Side', 'Funding',
+            'Funding Time', 'Size', 'Entry', 'Current', 'TP', 'Qty',
+            'Unrealized PnL', 'Funding Fee', 'Commission', 'Manual Close'
+        ];
+
+        let html = '<thead><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+
+        if (!rows.length) {
+            html += `<tr><td colspan="${cols.length}" class="empty">No active trades</td></tr>`;
+        }
+
+        rows.forEach(r => {
+            const tradeID = r.trade_id || r.plan_id || '';
+            const entry = r.entry_avg_price || r.entry_price || 0;
+            const current = r.mark_price || r.current_price || 0;
+
+            html += '<tr>';
+            html += `<td>${escapeHtml(r.exchange)}</td>`;
+            html += `<td title="${escapeHtml(symbolOf(r))}">${escapeHtml(symbolOf(r))}</td>`;
+            html += `<td>${scenarioBadge(r.scenario)}</td>`;
+            html += `<td>${statusBadge(r.status)}</td>`;
+            html += `<td>${escapeHtml(r.side || '')}</td>`;
+            html += `<td>${pct2(r.funding_rate)} / ${Number(r.funding_interval_hours || 8).toFixed(0)}h</td>`;
+            html += `<td>${utc3(r.funding_time)}</td>`;
+            html += `<td>${money(r.position_usdt)}</td>`;
+            html += `<td class="mono">${fmtPriceFull(entry)}</td>`;
+            html += `<td class="mono">${fmtPriceFull(current)}</td>`;
+            html += `<td class="mono">${fmtPriceFull(r.take_profit_price)}</td>`;
+            html += `<td class="mono">${fmtNum(r.qty, 8)}</td>`;
+            html += `<td class="mono">${signedMoney(r.unrealized_pnl, 6)}</td>`;
+            html += `<td class="mono">${signedMoney(r.funding_fee, 8)}</td>`;
+            html += `<td class="mono">${money(r.commission, 8)}</td>`;
+            html += `<td><button class="btn danger" onclick="manualClose('${escapeHtml(tradeID)}')">Close market</button></td>`;
+            html += '</tr>';
+        });
+
+        html += '</tbody>';
+        table.innerHTML = html;
+    }
+
+    function renderJournalTable() {
+        const rows = state?.journal || state?.closed || [];
+        const table = document.getElementById('journalTable');
+        if (!table) return;
+
+        const cols = [
+            'Closed', 'Exchange', 'Symbol', 'Scenario', 'Reason', 'Side',
+            'Funding', 'Entry', 'Exit', 'Qty', 'Funding Fee',
+            'Commission', 'Gross PnL', 'Net PnL'
+        ];
+
+        let html = '<thead><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+
+        if (!rows.length) {
+            html += `<tr><td colspan="${cols.length}" class="empty">No closed trades yet</td></tr>`;
+        }
+
+        rows.forEach(r => {
+            const entry = r.entry_avg_price || r.entry_price || 0;
+            const exit = r.exit_avg_price || r.exit_price || 0;
+
+            html += '<tr>';
+            html += `<td>${utc3(r.closed_at)}</td>`;
+            html += `<td>${escapeHtml(r.exchange)}</td>`;
+            html += `<td title="${escapeHtml(symbolOf(r))}">${escapeHtml(symbolOf(r))}</td>`;
+            html += `<td>${scenarioBadge(r.scenario)}</td>`;
+            html += `<td title="${escapeHtml(r.close_reason || '')}">${escapeHtml(r.close_reason || '')}</td>`;
+            html += `<td>${escapeHtml(r.side || '')}</td>`;
+            html += `<td>${pct2(r.funding_rate)} / ${Number(r.funding_interval_hours || 8).toFixed(0)}h</td>`;
+            html += `<td class="mono">${fmtPriceFull(entry)}</td>`;
+            html += `<td class="mono">${fmtPriceFull(exit)}</td>`;
+            html += `<td class="mono">${fmtNum(r.qty, 8)}</td>`;
+            html += `<td class="mono">${signedMoney(r.funding_fee, 8)}</td>`;
+            html += `<td class="mono">${money(r.commission, 8)}</td>`;
+            html += `<td class="mono">${signedMoney(r.gross_pnl, 6)}</td>`;
+            html += `<td class="mono"><strong>${signedMoney(r.net_pnl, 6)}</strong></td>`;
+            html += '</tr>';
+        });
+
+        html += '</tbody>';
+        table.innerHTML = html;
     }
 
     function renderAll(rebuild = false) {
@@ -1074,33 +1199,14 @@
         if (rebuild) buildShell();
 
         document.getElementById('mode').textContent = String(state.mode || '—').toUpperCase();
-        document.getElementById('serverInfo').textContent = 'Status: running';
+        document.getElementById('serverInfo').textContent = 'Status: running · ' + new Date().toLocaleTimeString('ru-RU', { hour12: false });
 
         renderExchangeGrid();
         exchanges().forEach(renderCandidateTable);
 
-        renderSimpleTable('activeTable', state.active || [], [
-            ['exchange', 'Exchange'],
-            ['symbol', 'Symbol'],
-            ['scenario', 'Scenario'],
-            ['side', 'Side'],
-            ['entry_price', 'Entry'],
-            ['take_profit_price', 'TP'],
-            ['unrealized_pnl', 'Unrealized PnL'],
-            ['status', 'Status']
-        ]);
-
-        renderSimpleTable('journalTable', state.closed || [], [
-            ['closed_at', 'Closed'],
-            ['exchange', 'Exchange'],
-            ['symbol', 'Symbol'],
-            ['scenario', 'Scenario'],
-            ['side', 'Side'],
-            ['entry_price', 'Entry'],
-            ['exit_price', 'Exit'],
-            ['net_pnl', 'Net PnL'],
-            ['close_reason', 'Reason']
-        ]);
+        renderPlannedTable();
+        renderActiveTable();
+        renderJournalTable();
 
         const settings = document.getElementById('settingsBox');
         if (settings) settings.textContent = JSON.stringify(state.settings || {}, null, 2);
@@ -1120,6 +1226,31 @@
         } catch (e) {
             document.getElementById('serverInfo').textContent = 'Status: API error ' + e.message;
         }
+    }
+
+    async function manualClose(tradeID) {
+        if (!tradeID) {
+            alert('trade_id is empty');
+            return;
+        }
+
+        if (!confirm('Закрыть эту сделку по рынку и отменить лимитные заявки?')) return;
+
+        const res = await fetch('/api/manual-close', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trade_id: tradeID })
+        });
+
+        const text = await res.text();
+
+        if (!res.ok) {
+            alert('Ошибка: ' + text);
+            return;
+        }
+
+        alert(text || 'Manual close request sent');
+        await load(false);
     }
 
     function pad(n) {
